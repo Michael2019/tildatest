@@ -1,11 +1,10 @@
 import os
 import json
 import requests
+import csv
+from io import StringIO
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import gspread
-import pandas as pd
-from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
 CORS(app, origins="*")
@@ -13,55 +12,43 @@ CORS(app, origins="*")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Google Sheets настройки
-SERVICE_ACCOUNT_FILE = 'credentials.json'  # путь к файлу на сервере
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")  # ID вашей таблицы
+# Публичная ссылка на CSV (добавьте в переменные окружения)
+SHEETS_CSV_URL = os.environ.get("SHEETS_CSV_URL")
 
 def get_post_template(category, module, lesson):
-    """
-    Получает текст шаблона из Google Sheets по категории, модулю и занятию
-    """
-    print(f"get_post_template: category={category}, module={module}, lesson={lesson}")  # отладка
+    """Получает текст шаблона из публичного CSV Google Sheets"""
+    print(f"get_post_template: category={category}, module={module}, lesson={lesson}")
     try:
-        # Авторизация
-        gc = gspread.service_account(filename=SERVICE_ACCOUNT_FILE)
-        
-        # Открываем таблицу по ID
-        sheet = gc.open_by_key(SPREADSHEET_ID)
-        worksheet = sheet.worksheet('Templates')  # убедитесь, что лист называется Templates
-        
-        # Получаем все данные (первая строка считается заголовками)
-        data = worksheet.get_all_records()
-        print(f"Данные из Sheets: {data[:2]}")  # покажем первые две записи для проверки
-        
-        if not data:
-            print("Таблица пуста")
+        if not SHEETS_CSV_URL:
+            print("SHEETS_CSV_URL не задан, возвращаю базовый текст")
             return f"{category}, модуль {module}, занятие {lesson}"
         
-        # Преобразуем в DataFrame
-        df = pd.DataFrame(data)
-        print(f"Колонки DataFrame: {df.columns.tolist()}")
+        # Загружаем CSV
+        response = requests.get(SHEETS_CSV_URL, timeout=10)
+        response.raise_for_status()
         
-        # Приводим значения к строке для безопасного сравнения
-        df['category'] = df['category'].astype(str)
-        df['module'] = df['module'].astype(str)
-        df['lesson'] = df['lesson'].astype(str)
+        # Парсим CSV
+        csv_data = response.text
+        reader = csv.DictReader(StringIO(csv_data))
+        rows = list(reader)
+        print(f"Загружено {len(rows)} строк из CSV")
         
-        # Ищем строку с совпадением
-        mask = (df['category'] == str(category)) & (df['module'] == str(module)) & (df['lesson'] == str(lesson))
-        match = df[mask]
-        print(f"Найдено совпадений: {len(match)}")
-        
-        if not match.empty:
-            result = match.iloc[0]['post_text']
-            print(f"Найден текст: {result[:50]}...")
-            return result
-        else:
-            print("Совпадений не найдено, возвращаю базовый текст")
+        if not rows:
             return f"{category}, модуль {module}, занятие {lesson}"
-            
+        
+        # Ищем строку с совпадением (названия колонок должны быть: category, module, lesson, post_text)
+        for row in rows:
+            if (row.get('category') == str(category) and 
+                row.get('module') == str(module) and 
+                row.get('lesson') == str(lesson)):
+                print(f"Найден шаблон: {row.get('post_text', '')[:50]}...")
+                return row.get('post_text', '')
+        
+        print("Совпадений не найдено, возвращаю базовый текст")
+        return f"{category}, модуль {module}, занятие {lesson}"
+        
     except Exception as e:
-        print(f"ОШИБКА в get_post_template: {e}")
+        print(f"ОШИБКА при чтении CSV: {e}")
         import traceback
         traceback.print_exc()
         return f"{category}, модуль {module}, занятие {lesson}"
@@ -69,7 +56,6 @@ def get_post_template(category, module, lesson):
 @app.route('/', methods=['POST'])
 def handle_post():
     try:
-        # Получаем данные из формы
         category = request.form.get('category', '')
         module = request.form.get('module', '')
         lesson = request.form.get('lesson', '')
@@ -81,10 +67,9 @@ def handle_post():
         if not chat_id:
             return jsonify({"error": "Не указан ID канала", "ok": False}), 400
         
-        # Получаем текст шаблона
         post_text = get_post_template(category, module, lesson)
         
-        # Отправка в Telegram (как и раньше)
+        # Отправка в Telegram (с фото/видео)
         if files:
             media = []
             attachments = {}
@@ -129,7 +114,6 @@ def handle_post():
                 data=payload,
                 files=files_for_tg
             )
-            
             return jsonify(response.json()), response.status_code
         
         elif post_text:
