@@ -16,39 +16,49 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 SHEETS_CSV_URL = os.environ.get("SHEETS_CSV_URL")
 
 def get_post_template(category, module, lesson):
-    """Получает текст шаблона из публичного CSV Google Sheets"""
     print(f"get_post_template: category={category}, module={module}, lesson={lesson}")
     try:
         if not SHEETS_CSV_URL:
-            print("SHEETS_CSV_URL не задан, возвращаю базовый текст")
+            print("SHEETS_CSV_URL не задан")
             return f"{category}, модуль {module}, занятие {lesson}"
         
-        # Загружаем CSV
         response = requests.get(SHEETS_CSV_URL, timeout=10)
         response.raise_for_status()
         
-        # Парсим CSV
         csv_data = response.text
+        print("Первые 200 символов CSV (сырые данные):")
+        print(repr(csv_data[:200]))  # repr покажет скрытые символы
+        
         reader = csv.DictReader(StringIO(csv_data))
         rows = list(reader)
-        print(f"Загружено {len(rows)} строк из CSV")
+        print(f"Всего строк данных (без заголовков): {len(rows)}")
         
-        if not rows:
-            return f"{category}, модуль {module}, занятие {lesson}"
-        
-        # Ищем строку с совпадением (названия колонок должны быть: category, module, lesson, post_text)
-        for row in rows:
-            if (row.get('category') == str(category) and 
-                row.get('module') == str(module) and 
-                row.get('lesson') == str(lesson)):
-                print(f"Найден шаблон: {row.get('post_text', '')[:50]}...")
-                return row.get('post_text', '')
+        if rows:
+            print("Ключи первой строки (заголовки):", list(rows[0].keys()))
+            print("Значения первой строки:", list(rows[0].values()))
+            
+            # Проверим, есть ли точное совпадение с пробелами
+            for i, row in enumerate(rows):
+                print(f"Строка {i+1}: {row}")
+                if (row.get('category') == category and 
+                    row.get('module') == str(module) and 
+                    row.get('lesson') == str(lesson)):
+                    print("Найдено совпадение без обработки!")
+                    return row.get('post_text', '')
+            
+            # Попробуем сравнить после обрезки пробелов
+            for i, row in enumerate(rows):
+                if (row.get('category', '').strip() == category and 
+                    row.get('module', '').strip() == str(module) and 
+                    row.get('lesson', '').strip() == str(lesson)):
+                    print("Найдено совпадение после .strip()")
+                    return row.get('post_text', '').strip()
         
         print("Совпадений не найдено, возвращаю базовый текст")
         return f"{category}, модуль {module}, занятие {lesson}"
         
     except Exception as e:
-        print(f"ОШИБКА при чтении CSV: {e}")
+        print(f"ОШИБКА: {e}")
         import traceback
         traceback.print_exc()
         return f"{category}, модуль {module}, занятие {lesson}"
