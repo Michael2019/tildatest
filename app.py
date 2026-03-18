@@ -5,17 +5,15 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import gspread
 import pandas as pd
+from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
 CORS(app, origins="*")
 
-# Токены из переменных окружения
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # Google Sheets настройки
-# Файл credentials.json нужно будет загрузить на Render
-# (см. инструкцию ниже)
 SERVICE_ACCOUNT_FILE = 'credentials.json'  # путь к файлу на сервере
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")  # ID вашей таблицы
 
@@ -23,38 +21,49 @@ def get_post_template(category, module, lesson):
     """
     Получает текст шаблона из Google Sheets по категории, модулю и занятию
     """
+    print(f"get_post_template: category={category}, module={module}, lesson={lesson}")  # отладка
     try:
         # Авторизация
         gc = gspread.service_account(filename=SERVICE_ACCOUNT_FILE)
         
         # Открываем таблицу по ID
         sheet = gc.open_by_key(SPREADSHEET_ID)
+        worksheet = sheet.worksheet('Templates')  # убедитесь, что лист называется Templates
         
-        # Выбираем лист с шаблонами (назовите его 'Templates')
-        worksheet = sheet.worksheet('Templates')
+        # Получаем все данные (первая строка считается заголовками)
+        data = worksheet.get_all_records()
+        print(f"Данные из Sheets: {data[:2]}")  # покажем первые две записи для проверки
         
-        # Получаем все данные
-        data = worksheet.get_all_records()  # возвращает список словарей
+        if not data:
+            print("Таблица пуста")
+            return f"{category}, модуль {module}, занятие {lesson}"
         
-        # Преобразуем в DataFrame для удобного поиска
+        # Преобразуем в DataFrame
         df = pd.DataFrame(data)
+        print(f"Колонки DataFrame: {df.columns.tolist()}")
+        
+        # Приводим значения к строке для безопасного сравнения
+        df['category'] = df['category'].astype(str)
+        df['module'] = df['module'].astype(str)
+        df['lesson'] = df['lesson'].astype(str)
         
         # Ищем строку с совпадением
-        match = df[
-            (df['category'] == category) & 
-            (df['module'] == int(module)) & 
-            (df['lesson'] == int(lesson))
-        ]
+        mask = (df['category'] == str(category)) & (df['module'] == str(module)) & (df['lesson'] == str(lesson))
+        match = df[mask]
+        print(f"Найдено совпадений: {len(match)}")
         
         if not match.empty:
-            return match.iloc[0]['post_text']
+            result = match.iloc[0]['post_text']
+            print(f"Найден текст: {result[:50]}...")
+            return result
         else:
-            # Если шаблон не найден — возвращаем заглушку
+            print("Совпадений не найдено, возвращаю базовый текст")
             return f"{category}, модуль {module}, занятие {lesson}"
             
     except Exception as e:
-        print(f"Ошибка при чтении Google Sheets: {e}")
-        # В случае ошибки возвращаем базовый текст
+        print(f"ОШИБКА в get_post_template: {e}")
+        import traceback
+        traceback.print_exc()
         return f"{category}, модуль {module}, занятие {lesson}"
 
 @app.route('/', methods=['POST'])
@@ -72,10 +81,10 @@ def handle_post():
         if not chat_id:
             return jsonify({"error": "Не указан ID канала", "ok": False}), 400
         
-        # Получаем текст шаблона из Google Sheets
+        # Получаем текст шаблона
         post_text = get_post_template(category, module, lesson)
         
-        # Далее ваш существующий код отправки в Telegram
+        # Отправка в Telegram (как и раньше)
         if files:
             media = []
             attachments = {}
