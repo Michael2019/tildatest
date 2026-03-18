@@ -5,55 +5,35 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
+# Разрешаем запросы с вашей Тильды (можно заменить * на конкретный адрес)
 CORS(app, origins="*")
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN")
-
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-MAX_API_URL = "https://botapi.max.ru"  # Уточните в документации MAX
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 @app.route('/', methods=['POST'])
 def handle_post():
+    """
+    Принимает форму с текстом и файлами, отправляет всё одним альбомом в Telegram
+    """
     try:
+        # 1. Получаем данные из формы
         post_text = request.form.get('text', '')
-        telegram_chat_id = request.form.get('telegram_chat_id', '')
-        max_chat_id = request.form.get('max_chat_id', '')
+        chat_id = request.form.get('chat_id', '')
         files = request.files.getlist('media_files')
         
-        print(f"Запрос: telegram_chat_id={telegram_chat_id}, max_chat_id={max_chat_id}, файлов={len(files)}")
+        print(f"Запрос: chat_id={chat_id}, файлов={len(files)}")
         
-        results = {}
+        if not chat_id:
+            return jsonify({"error": "Не указан ID канала", "ok": False}), 400
         
-        if telegram_chat_id:
-            tg_result = send_to_telegram(post_text, telegram_chat_id, files)
-            results['telegram'] = tg_result
-        else:
-            results['telegram'] = {"status": "skipped", "reason": "no chat_id"}
-        
-        if max_chat_id:
-            max_result = send_to_max(post_text, max_chat_id)
-            results['max'] = max_result
-        else:
-            results['max'] = {"status": "skipped", "reason": "no chat_id"}
-        
-        # Определяем общий успех
-        overall_ok = all(
-            r.get('ok', False) for r in results.values() 
-            if isinstance(r, dict) and 'ok' in r
-        )
-        return jsonify({"ok": overall_ok, "results": results}), 200
-        
-    except Exception as e:
-        print(f"КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
-        return jsonify({"error": str(e), "ok": False}), 500
-
-def send_to_telegram(text, chat_id, files):
-    try:
+        # 2. Если есть файлы — готовим медиагруппу
         if files:
-            media = []
-            attachments = {}
+            media = []          # список элементов альбома
+            attachments = {}     # словарь файлов для прикрепления к запросу
+            
             for idx, file in enumerate(files):
+                # Определяем тип по MIME
                 mime_type = file.mimetype or 'image/jpeg'
                 filename = file.filename or f"file_{idx}"
                 
@@ -62,86 +42,78 @@ def send_to_telegram(text, chat_id, files):
                 elif 'video' in mime_type:
                     media_type = 'video'
                 else:
+                    print(f"Пропущен неподдерживаемый файл: {filename} ({mime_type})")
                     continue
                 
+                # Уникальное имя для attach (должно быть допустимым в multipart)
                 attach_name = f"file{idx}"
+                
+                # Элемент альбома
                 media_item = {
                     'type': media_type,
                     'media': f'attach://{attach_name}'
                 }
-                if idx == 0 and text:
-                    media_item['caption'] = text
+                # Добавляем подпись только к первому элементу
+                if idx == 0 and post_text:
+                    media_item['caption'] = post_text
                     media_item['parse_mode'] = 'HTML'
                 
                 media.append(media_item)
+                # Сохраняем файл для отправки
                 attachments[attach_name] = (filename, file.stream, mime_type)
             
             if not media:
-                return {"ok": False, "error": "Нет поддерживаемых файлов"}
+                return jsonify({"error": "Нет поддерживаемых файлов", "ok": False}), 400
             
+            # Ограничение Telegram: не более 10 элементов в альбоме
+            if len(media) > 10:
+                media = media[:10]
+                print("Обрезано до 10 файлов")
+            
+            # 3. Формируем запрос к Telegram API
             payload = {
                 'chat_id': chat_id,
-                'media': json.dumps(media[:10])
+                'media': json.dumps(media)   # обязательная JSON-строка
             }
-            files_for_tg = [(name, (fname, stream, mime)) for name, (fname, stream, mime) in attachments.items()]
             
+            # Подготавливаем файлы для multipart-запроса
+            files_for_tg = []
+            for name, (fname, stream, mime) in attachments.items():
+                files_for_tg.append((name, (fname, stream, mime)))
+            
+            # Отправляем один запрос sendMediaGroup
             response = requests.post(
                 f"{TELEGRAM_API_URL}/sendMediaGroup",
                 data=payload,
                 files=files_for_tg
             )
-            print(f"Telegram response: {response.status_code} - {response.text[:200]}")
-            return response.json() if response.status_code == 200 else {"ok": False, "error": response.text}
+            
+            print(f"Ответ Telegram: {response.status_code}")
+            if response.status_code != 200:
+                print(f"Текст ошибки: {response.text}")
+            
+            return jsonify(response.json()), response.status_code
         
-        elif text:
+        # 4. Если файлов нет, но есть текст — просто отправляем сообщение
+        elif post_text:
             payload = {
                 'chat_id': chat_id,
-                'text': text,
+                'text': post_text,
                 'parse_mode': 'HTML'
             }
             response = requests.post(f"{TELEGRAM_API_URL}/sendMessage", data=payload)
-            print(f"Telegram response: {response.status_code} - {response.text[:200]}")
-            return response.json() if response.status_code == 200 else {"ok": False, "error": response.text}
+            return jsonify(response.json()), response.status_code
+        
         else:
-            return {"ok": False, "error": "Нет контента для публикации"}
-    except Exception as e:
-        print(f"Ошибка в send_to_telegram: {e}")
-        return {"ok": False, "error": str(e)}
-
-def send_to_max(text, chat_id):
-    try:
-        if not text:
-            return {"ok": False, "error": "Нет текста для публикации"}
-        
-        headers = {
-            'Authorization': MAX_BOT_TOKEN,  # Возможно, нужно 'Bearer ' + токен
-            'Content-Type': 'application/json'
-        }
-        
-        payload = {
-            'chat_id': chat_id,
-            'text': text
-        }
-        
-        print(f"MAX payload: {payload}")
-        response = requests.post(
-            f"{MAX_API_URL}/messages/send",
-            json=payload,
-            headers=headers
-        )
-        print(f"MAX response: {response.status_code} - {response.text[:200]}")
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"ok": False, "error": f"MAX API error: {response.text}"}
+            return jsonify({"error": "Нет контента для публикации", "ok": False}), 400
             
     except Exception as e:
-        print(f"Ошибка в send_to_max: {e}")
-        return {"ok": False, "error": str(e)}
+        print(f"КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
+        return jsonify({"error": str(e), "ok": False}), 500
 
 @app.route('/test', methods=['GET'])
 def test():
+    """Проверка, что сервер жив"""
     return jsonify({"status": "ok", "message": "Сервер работает!"})
 
 if __name__ == '__main__':
