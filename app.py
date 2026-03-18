@@ -25,9 +25,10 @@ def get_post_template(category, module, lesson):
         response = requests.get(SHEETS_CSV_URL, timeout=10)
         response.raise_for_status()
         
-        csv_data = response.text
-        print("Первые 200 символов CSV (сырые данные):")
-        print(repr(csv_data[:200]))  # repr покажет скрытые символы
+        # Принудительно декодируем как UTF-8
+        csv_data = response.content.decode('utf-8')
+        print("Первые 200 символов CSV (UTF-8):")
+        print(repr(csv_data[:200]))
         
         reader = csv.DictReader(StringIO(csv_data))
         rows = list(reader)
@@ -37,22 +38,13 @@ def get_post_template(category, module, lesson):
             print("Ключи первой строки (заголовки):", list(rows[0].keys()))
             print("Значения первой строки:", list(rows[0].values()))
             
-            # Проверим, есть ли точное совпадение с пробелами
-            for i, row in enumerate(rows):
-                print(f"Строка {i+1}: {row}")
+            # Ищем совпадение
+            for row in rows:
                 if (row.get('category') == category and 
                     row.get('module') == str(module) and 
                     row.get('lesson') == str(lesson)):
-                    print("Найдено совпадение без обработки!")
+                    print("Найдено совпадение!")
                     return row.get('post_text', '')
-            
-            # Попробуем сравнить после обрезки пробелов
-            for i, row in enumerate(rows):
-                if (row.get('category', '').strip() == category and 
-                    row.get('module', '').strip() == str(module) and 
-                    row.get('lesson', '').strip() == str(lesson)):
-                    print("Найдено совпадение после .strip()")
-                    return row.get('post_text', '').strip()
         
         print("Совпадений не найдено, возвращаю базовый текст")
         return f"{category}, модуль {module}, занятие {lesson}"
