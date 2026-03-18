@@ -1,4 +1,6 @@
 Flask
 Flask-CORS
 requests
-gunicorn
+gspread
+pandas
+oauth2client
