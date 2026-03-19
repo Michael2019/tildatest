@@ -6,7 +6,8 @@ from io import StringIO
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import (
-    JWTManager, create_access_token, jwt_required, get_jwt_identity
+    JWTManager, create_access_token, jwt_required,
+    get_jwt_identity, get_jwt
 )
 
 import config
@@ -53,10 +54,16 @@ def login():
 
         user = auth.authenticate_user(username, password)
         if user:
-            access_token = create_access_token(identity={
+            # Дополнительные данные, которые хотим сохранить в токене
+            additional_claims = {
                 'username': user['username'],
                 'role': user['role']
-            })
+            }
+            # Создаём токен — identity должно быть строкой (username)
+            access_token = create_access_token(
+                identity=user['username'],
+                additional_claims=additional_claims
+            )
             print(f"   ✅ вход для {username}")
             return jsonify({"ok": True, "access_token": access_token, "user": user}), 200
         else:
@@ -71,8 +78,15 @@ def login():
 @jwt_required()
 def me():
     try:
-        current_user = get_jwt_identity()
-        return jsonify({"ok": True, "user": current_user}), 200
+        current_username = get_jwt_identity()
+        claims = get_jwt()
+        return jsonify({
+            "ok": True,
+            "user": {
+                "username": current_username,
+                "role": claims.get('role', '')
+            }
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e), "ok": False}), 500
 
@@ -86,8 +100,8 @@ def get_post_template(category, module, lesson):
         csv_data = response.content.decode('utf-8')
         reader = csv.DictReader(StringIO(csv_data))
         for row in reader:
-            if (row.get('category', '').strip() == str(category) and 
-                row.get('module', '').strip() == str(module) and 
+            if (row.get('category', '').strip() == str(category) and
+                row.get('module', '').strip() == str(module) and
                 row.get('lesson', '').strip() == str(lesson)):
                 return row.get('post_text', '').strip()
         return f"{category}, модуль {module}, занятие {lesson}"
@@ -155,8 +169,9 @@ def handle_post_legacy():
 @jwt_required()
 def create_post():
     try:
-        current_user = get_jwt_identity()
-        print(f"👤 {current_user['username']} создаёт пост")
+        current_username = get_jwt_identity()
+        claims = get_jwt()
+        print(f"👤 {current_username} (роль: {claims.get('role')}) создаёт пост")
         print(f"  category: {request.form.get('category')}")
         print(f"  module: {request.form.get('module')}")
         print(f"  lesson: {request.form.get('lesson')}")
