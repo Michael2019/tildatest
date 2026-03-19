@@ -2,3 +2,6 @@ Flask
 Flask-CORS
 requests
 gunicorn
+Flask-JWT-Extended
+python-dotenv
+pandas
