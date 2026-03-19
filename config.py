@@ -2,7 +2,7 @@ import os
 from datetime import timedelta
 
 class Config:
-    JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+    JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(days=7)
     
     # Ссылка на лист с шаблонами постов
