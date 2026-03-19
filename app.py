@@ -17,6 +17,22 @@ CORS(app, origins="*")
 app.config['JWT_SECRET_KEY'] = config.config.JWT_SECRET_KEY
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = config.config.JWT_ACCESS_TOKEN_EXPIRES
 jwt = JWTManager(app)
+from flask_jwt_extended.exceptions import NoAuthorizationError, InvalidHeaderError, JWTDecodeError, ExpiredSignatureError
+
+@jwt.unauthorized_loader
+def unauthorized_callback(reason):
+    print(f"🚫 JWT unauthorized: {reason}")
+    return jsonify({"error": "Missing or invalid token", "ok": False}), 401
+
+@jwt.invalid_token_loader
+def invalid_token_callback(reason):
+    print(f"🚫 JWT invalid token: {reason}")
+    return jsonify({"error": "Invalid token", "ok": False}), 422
+
+@jwt.expired_token_loader
+def expired_token_callback(jwt_header, jwt_payload):
+    print("🚫 JWT expired token")
+    return jsonify({"error": "Token expired", "ok": False}), 401
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
