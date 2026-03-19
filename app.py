@@ -28,9 +28,13 @@ def login():
     """Вход, получение JWT токена"""
     try:
         data = request.get_json()
+        print(f"🔑 /api/login: получены данные: {data}")
+        
         username = data.get('username')
         password = data.get('password')
+        
         if not username or not password:
+            print("   ❌ нет логина или пароля")
             return jsonify({"error": "Логин и пароль обязательны", "ok": False}), 400
 
         user = auth.authenticate_user(username, password)
@@ -39,16 +43,20 @@ def login():
                 'username': user['username'],
                 'role': user['role']
             })
+            print(f"   ✅ успешный вход для {username}")
             return jsonify({
                 "ok": True,
                 "access_token": access_token,
                 "user": user
             }), 200
         else:
+            print(f"   ❌ неверные данные для {username}")
             return jsonify({"error": "Неверный логин или пароль", "ok": False}), 401
     except Exception as e:
+        print(f"🔥 /api/login: ошибка {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e), "ok": False}), 500
-
 @app.route('/api/me', methods=['GET'])
 @jwt_required()
 def me():
