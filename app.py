@@ -66,31 +66,80 @@ def get_post_template(category, module, lesson):
         print(f"Ошибка шаблона: {e}")
         return f"{category}, модуль {module}, занятие {lesson}"
 
-# ============= ФУНКЦИЯ УСЕЧЕНИЯ ТЕКСТА ПО АБЗАЦАМ =============
+# ============= ФУНКЦИЯ УСЕЧЕНИЯ ТЕКСТА ПО АБЗАЦАМ (С СОХРАНЕНИЕМ ХЭШТЕГОВ И ПОДПИСИ) =============
 def trim_text_to_limit(main_text, signature, max_length):
     """
-    Удаляет абзацы из main_text, чтобы main_text + signature вписался в max_length.
-    signature добавляется в конце.
+    Удаляет абзацы из основного текста, сохраняя первую строку (хэштеги) и подпись.
+    Если после удаления всех абзацев лимит всё ещё превышен, последний абзац обрезается по словам.
     Возвращает итоговую строку.
     """
     full = main_text + signature
     if len(full) <= max_length:
         return full
 
-    # Разбиваем основной текст на абзацы (разделитель \n\n)
-    paragraphs = main_text.split('\n\n')
-    # Пока суммарная длина (оставшиеся абзацы + подпись) превышает лимит, удаляем последний абзац
-    while paragraphs and len('\n\n'.join(paragraphs) + signature) > max_length:
-        paragraphs.pop()
+    # Разделяем на первую строку (хэштеги) и остальной текст
+    lines = main_text.split('\n', 1)
+    header = lines[0]  # первая строка — хэштеги
+    body = lines[1] if len(lines) > 1 else ""
 
-    trimmed_main = '\n\n'.join(paragraphs)
-    # Если после удаления всех абзацев всё равно превышает, оставляем только подпись
-    if len(trimmed_main + signature) > max_length:
-        # Если даже подпись слишком длинная (редко), обрезаем её посимвольно
-        if len(signature) > max_length:
-            signature = signature[:max_length - 3] + '...'
-        return signature
-    return trimmed_main + signature
+    # Если нет тела, то обрезаем header по словам
+    if not body:
+        if len(header + signature) > max_length:
+            words = header.split()
+            truncated = ""
+            for word in words:
+                if len(truncated + ' ' + word + signature) <= max_length:
+                    truncated += (' ' + word) if truncated else word
+                else:
+                    break
+            if truncated:
+                return truncated + signature
+            else:
+                # Если даже одно слово не влезает, оставляем только подпись
+                return signature
+        return header + signature
+
+    # Разбиваем тело на абзацы (разделитель \n\n)
+    paragraphs = body.split('\n\n')
+    # Удаляем абзацы с конца, пока не влезет
+    while paragraphs and len(header + '\n\n' + '\n\n'.join(paragraphs) + signature) > max_length:
+        removed = paragraphs.pop()
+        print(f"   ✂️ Удалён абзац (длина {len(removed)} символов)")
+
+    # Если после удаления всех абзацев всё равно не влезает — обрезаем последний абзац по словам
+    if paragraphs:
+        candidate = header + '\n\n' + '\n\n'.join(paragraphs) + signature
+        if len(candidate) > max_length:
+            # Обрезаем последний абзац по словам
+            last_para = paragraphs[-1]
+            words = last_para.split()
+            truncated = ""
+            for word in words:
+                test_para = (truncated + ' ' + word).strip()
+                test_body = '\n\n'.join(paragraphs[:-1] + [test_para]) if paragraphs[:-1] else test_para
+                test_full = header + '\n\n' + test_body + signature
+                if len(test_full) <= max_length:
+                    truncated = test_para
+                else:
+                    break
+            if truncated:
+                paragraphs[-1] = truncated + '...'
+                print(f"   ✂️ Последний абзац обрезан до {len(truncated) + 3} символов")
+            else:
+                # Если даже одно слово не влезает, удаляем последний абзац целиком
+                paragraphs.pop()
+                print(f"   ✂️ Удалён последний абзац целиком (не влезало ни слова)")
+    else:
+        # Все абзацы удалены, остаётся только header + подпись
+        print(f"   ✂️ Удалены все абзацы, остаются хэштеги и подпись")
+
+    # Формируем итоговый текст
+    if paragraphs:
+        final_body = '\n\n'.join(paragraphs)
+        return header + '\n\n' + final_body + signature
+    else:
+        # Только хэштеги и подпись
+        return header + signature
 
 # ============= ОТПРАВКА В TELEGRAM =============
 def send_to_telegram(chat_id, text, files_data):
@@ -340,7 +389,7 @@ def create_post():
             time_clean = time_val.replace(':', '_')
             tags.append(f"#{weekday_lower}_{time_clean}")
         if category:
-            category_tag = re.sub(r'[^\w\s-]', '', category)  # удаляем лишние символы
+            category_tag = re.sub(r'[^\w\s-]', '', category)
             category_tag = category_tag.replace(' ', '_')
             tags.append(f"#{category_tag}")
         if tags:
@@ -356,8 +405,9 @@ def create_post():
 
         # 4. Определяем лимит в зависимости от наличия файлов
         max_len = 1024 if files_data else 4096
+        print(f"   📏 Лимит текста: {max_len} символов (файлы={'да' if files_data else 'нет'})")
 
-        # 5. Обрезаем текст по абзацам, сохраняя подпись
+        # 5. Обрезаем текст по абзацам, сохраняя хэштеги и подпись
         final_text = trim_text_to_limit(full_text, signature, max_len)
 
         # Отправка в Telegram
