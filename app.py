@@ -66,63 +66,31 @@ def get_post_template(category, module, lesson):
         print(f"Ошибка шаблона: {e}")
         return f"{category}, модуль {module}, занятие {lesson}"
 
-# ============= НОВАЯ ФУНКЦИЯ УСЕЧЕНИЯ ТЕКСТА =============
-def trim_text_to_limit(tags, main_text, signature, max_length):
+# ============= ФУНКЦИЯ УСЕЧЕНИЯ ТЕКСТА ПО АБЗАЦАМ =============
+def trim_text_to_limit(main_text, signature, max_length):
     """
-    Обрезает текст, оставляя tags и signature обязательно.
-    main_text укорачивается по абзацам (удаляются последние абзацы).
+    Удаляет абзацы из main_text, чтобы main_text + signature вписался в max_length.
+    signature добавляется в конце.
     Возвращает итоговую строку.
     """
-    # Если tags + signature уже превышают лимит – обрезаем signature
-    base_len = len(tags) + len(signature)
-    if base_len > max_length:
-        available_for_signature = max_length - len(tags)
-        if available_for_signature <= 0:
-            # Обрезаем tags
-            tags = tags[:max_length - 3] + '...' if max_length > 3 else ''
-            signature = ''
-        else:
-            signature = signature[:available_for_signature - 3] + '...' if available_for_signature > 3 else ''
-        return tags + signature
+    full = main_text + signature
+    if len(full) <= max_length:
+        return full
 
-    # Разбиваем основной текст на абзацы (по \n\n)
+    # Разбиваем основной текст на абзацы (разделитель \n\n)
     paragraphs = main_text.split('\n\n')
-    # Удаляем абзацы с конца, пока не влезет
-    while paragraphs:
-        current_main = '\n\n'.join(paragraphs)
-        total = len(tags) + len(current_main) + len(signature)
-        # Добавляем разделители, если соответствующие части не пусты
-        if tags and current_main:
-            total += 2  # для \n\n
-        if current_main and signature:
-            total += 2  # для \n\n
-        if total <= max_length:
-            break
+    # Пока суммарная длина (оставшиеся абзацы + подпись) превышает лимит, удаляем последний абзац
+    while paragraphs and len('\n\n'.join(paragraphs) + signature) > max_length:
         paragraphs.pop()
 
-    if not paragraphs:
-        current_main = ''
-    else:
-        current_main = '\n\n'.join(paragraphs)
-
-    # Формируем итоговую строку с разделителями
-    parts = []
-    if tags:
-        parts.append(tags)
-    if current_main:
-        if parts:
-            parts.append('\n\n')
-        parts.append(current_main)
-    if signature:
-        if parts:
-            parts.append('\n\n')
-        parts.append(signature)
-
-    final_text = ''.join(parts)
-    # На случай, если всё же превысили лимит (редко) – обрезаем посимвольно
-    if len(final_text) > max_length:
-        final_text = final_text[:max_length - 3] + '...'
-    return final_text
+    trimmed_main = '\n\n'.join(paragraphs)
+    # Если после удаления всех абзацев всё равно превышает, оставляем только подпись
+    if len(trimmed_main + signature) > max_length:
+        # Если даже подпись слишком длинная (редко), обрезаем её посимвольно
+        if len(signature) > max_length:
+            signature = signature[:max_length - 3] + '...'
+        return signature
+    return trimmed_main + signature
 
 # ============= ОТПРАВКА В TELEGRAM =============
 def send_to_telegram(chat_id, text, files_data):
@@ -362,22 +330,26 @@ def create_post():
         if not telegram_chat_id:
             return jsonify({"error": "Не указан ID канала Telegram", "ok": False}), 400
 
-        # 1. Получаем базовый текст из шаблона (без хэштегов и подписи)
+        # 1. Получаем базовый текст из шаблона
         base_text = get_post_template(category, module, lesson)
 
-        # 2. Формируем строку хэштегов
+        # 2. Добавляем хэштеги дня/времени и категории
         tags = []
         if weekday and time_val:
             weekday_lower = weekday.lower()
             time_clean = time_val.replace(':', '_')
             tags.append(f"#{weekday_lower}_{time_clean}")
         if category:
-            category_tag = re.sub(r'[^\w\s-]', '', category)
+            category_tag = re.sub(r'[^\w\s-]', '', category)  # удаляем лишние символы
             category_tag = category_tag.replace(' ', '_')
             tags.append(f"#{category_tag}")
-        tags_line = ' '.join(tags) if tags else ''
+        if tags:
+            tags_line = ' '.join(tags)
+            full_text = f"{tags_line}\n{base_text}"
+        else:
+            full_text = base_text
 
-        # 3. Подпись преподавателя
+        # 3. Добавляем подпись преподавателя (если роль не пустая и не служебная)
         signature = ""
         if role and role.lower() not in ('admin', 'user', 'moderator'):
             signature = f"\n\nВаш преподаватель {role}"
@@ -385,8 +357,8 @@ def create_post():
         # 4. Определяем лимит в зависимости от наличия файлов
         max_len = 1024 if files_data else 4096
 
-        # 5. Обрезаем текст с сохранением хэштегов и подписи
-        final_text = trim_text_to_limit(tags_line, base_text, signature, max_len)
+        # 5. Обрезаем текст по абзацам, сохраняя подпись
+        final_text = trim_text_to_limit(full_text, signature, max_len)
 
         # Отправка в Telegram
         tg_result = send_to_telegram(telegram_chat_id, final_text, files_data)
@@ -410,6 +382,11 @@ def create_post():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e), "ok": False}), 500
+
+# ============= СТАРЫЙ ЭНДПОИНТ (ДЛЯ СОВМЕСТИМОСТИ) =============
+# @app.route('/', methods=['POST'])
+# def handle_post_legacy():
+#     pass
 
 @app.route('/test', methods=['GET'])
 def test():
