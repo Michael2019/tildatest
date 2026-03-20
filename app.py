@@ -123,7 +123,7 @@ def send_to_max(chat_id, text, files_data=None):
     token_preview = MAX_BOT_TOKEN[:5] + "..." if len(MAX_BOT_TOKEN) > 5 else MAX_BOT_TOKEN
     print(f"🔑 Токен MAX (первые 5 символов): {token_preview}")
 
-    # Тестовая отправка текста для проверки токена
+    # Проверяем токен
     test_headers = {'Authorization': MAX_BOT_TOKEN, 'Content-Type': 'application/json'}
     test_payload = {"text": "🔄 Проверка соединения с MAX"}
     try:
@@ -147,32 +147,38 @@ def send_to_max(chat_id, text, files_data=None):
 
     if files_data:
         for filename, content, mime_type in files_data:
+            # Определяем тип
             if 'image' in mime_type:
                 file_type = 'image'
             elif 'video' in mime_type:
                 file_type = 'video'
             else:
-                print(f" ⚠️ Файл {filename} пропущен (неподдерживаемый тип)")
+                print(f" ⚠️ Файл {filename} пропущен (неподдерживаемый тип {mime_type})")
                 continue
 
             try:
-                # Шаг 1: Получить URL для загрузки
-                upload_url_resp = requests.post(
+                # 1. Получаем URL для загрузки
+                print(f"   → Запрашиваем URL для {filename} (тип {file_type})")
+                upload_req = requests.post(
                     "https://platform-api.max.ru/uploads",
                     params={'type': file_type},
                     headers={'Authorization': MAX_BOT_TOKEN},
                     timeout=30
                 )
-                if upload_url_resp.status_code != 200:
-                    print(f"   ❌ Не удалось получить URL: {upload_url_resp.status_code} - {upload_url_resp.text[:100]}")
+                if upload_req.status_code != 200:
+                    print(f"   ❌ Не удалось получить URL: {upload_req.status_code} - {upload_req.text[:100]}")
                     continue
-
-                upload_data = upload_url_resp.json()
+                upload_data = upload_req.json()
+                # Проверяем наличие нужных полей
+                if 'url' not in upload_data or 'token' not in upload_data:
+                    print(f"   ❌ Ответ /uploads не содержит url или token: {upload_data}")
+                    continue
                 upload_url = upload_data['url']
                 file_token = upload_data['token']
-                print(f"   ✅ Получен URL для загрузки {filename}")
+                print(f"   ✅ URL получен, token={file_token[:10]}...")
 
-                # Шаг 2: Загрузить файл
+                # 2. Загружаем файл
+                print(f"   → Загружаем файл {filename} ({len(content)} байт)")
                 headers_upload = {
                     'Authorization': MAX_BOT_TOKEN,
                     'Content-Type': mime_type,
@@ -188,9 +194,10 @@ def send_to_max(chat_id, text, files_data=None):
                     print(f"   ❌ Ошибка загрузки: {upload_file_resp.status_code} - {upload_file_resp.text[:100]}")
                     continue
 
-                print(f"   ✅ Файл {filename} загружен")
-                time.sleep(1.0)  # Пауза для обработки
+                print(f"   ✅ Файл загружен, ждём 1 секунду...")
+                time.sleep(1.0)
 
+                # 3. Добавляем вложение
                 message_attachments.append({
                     'type': file_type,
                     'payload': {
@@ -198,11 +205,14 @@ def send_to_max(chat_id, text, files_data=None):
                         'name': filename
                     }
                 })
+                print(f"   ✅ Вложение добавлено для {filename}")
 
             except Exception as e:
                 print(f"🔥 Ошибка при обработке {filename}: {e}")
+                import traceback
+                traceback.print_exc()
 
-    # Формируем сообщение
+    # Формируем тело сообщения
     message_body = {}
     if text:
         message_body['text'] = text
@@ -211,10 +221,11 @@ def send_to_max(chat_id, text, files_data=None):
         message_body['attachments'] = message_attachments
 
     if not message_body:
-        return {"ok": False, "error": "Нет контента", "skipped": True}
+        return {"ok": False, "error": "Нет контента для отправки", "skipped": True}
 
-    # Отправка финального сообщения
+    # Отправляем сообщение
     try:
+        print(f"   → Отправляем сообщение в MAX (текст={bool(text)}, вложений={len(message_attachments)})")
         send_msg_resp = requests.post(
             f"https://platform-api.max.ru/messages?chat_id={chat_id}",
             headers={'Authorization': MAX_BOT_TOKEN, 'Content-Type': 'application/json'},
@@ -228,7 +239,7 @@ def send_to_max(chat_id, text, files_data=None):
             print(f"   ❌ Ошибка отправки сообщения: {send_msg_resp.status_code} - {send_msg_resp.text[:200]}")
             return {"ok": False, "error": send_msg_resp.text}
     except Exception as e:
-        print(f"🔥 Ошибка отправки сообщения: {e}")
+        print(f"🔥 Ошибка при отправке сообщения: {e}")
         return {"ok": False, "error": str(e)}
 
 # ============= АВТОРИЗАЦИЯ =============
