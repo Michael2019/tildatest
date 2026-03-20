@@ -65,7 +65,7 @@ def get_post_template(category, module, lesson):
         print(f"Ошибка шаблона: {e}")
         return f"{category}, модуль {module}, занятие {lesson}"
 
-# ============= ОТПРАВКА В TELEGRAM (ПОЛНОСТЬЮ РАБОТАЕТ) =============
+# ============= ОТПРАВКА В TELEGRAM =============
 def send_to_telegram(chat_id, text, files_data):
     try:
         print(f"📱 send_to_telegram: chat_id={chat_id}, files={len(files_data)}")
@@ -112,24 +112,46 @@ def send_to_telegram(chat_id, text, files_data):
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
-# ============= НОВАЯ ОТПРАВКА В MAX (С ПОДДЕРЖКОЙ ФАЙЛОВ) =============
+# ============= ОТПРАВКА В MAX (С ПОДДЕРЖКОЙ ФАЙЛОВ) =============
 def send_to_max(chat_id, text, files_data=None):
     """
     Отправка текста и медиа в MAX.
     files_data: список кортежей (filename, content, mime_type)
     """
     print(f"📱 send_to_max: chat_id={chat_id}, files={len(files_data) if files_data else 0}")
+
     if not MAX_BOT_TOKEN:
         print("❌ MAX_BOT_TOKEN не задан")
         return {"ok": False, "error": "MAX_BOT_TOKEN not configured", "skipped": True}
 
-    # Собираем вложения для сообщения
+    token_preview = MAX_BOT_TOKEN[:5] + "..." if len(MAX_BOT_TOKEN) > 5 else MAX_BOT_TOKEN
+    print(f"🔑 Токен MAX (первые 5 символов): {token_preview}")
+
+    # Тестовая отправка текста для проверки токена
+    test_headers = {'Authorization': f'Bearer {MAX_BOT_TOKEN}', 'Content-Type': 'application/json'}
+    test_payload = {"text": "🔄 Проверка соединения с MAX"}
+    try:
+        test_resp = requests.post(
+            f"https://platform-api.max.ru/messages?chat_id={chat_id}",
+            headers=test_headers,
+            json=test_payload,
+            timeout=10
+        )
+        if test_resp.status_code == 401:
+            print("❌ Токен MAX недействителен (401 при тестовой отправке текста)")
+            return {"ok": False, "error": "Invalid MAX token", "skipped": False}
+        elif test_resp.status_code != 200:
+            print(f"⚠️ Тестовая отправка текста вернула {test_resp.status_code}: {test_resp.text[:100]}")
+        else:
+            print("✅ Токен MAX рабочий (тестовое сообщение отправлено)")
+    except Exception as e:
+        print(f"⚠️ Не удалось выполнить тестовую отправку: {e}")
+
     message_attachments = []
 
-    # Обрабатываем каждый файл
+    # Обработка файлов
     if files_data:
         for filename, content, mime_type in files_data:
-            # Определяем тип файла для MAX
             if 'image' in mime_type:
                 file_type = 'image'
             elif 'video' in mime_type:
@@ -146,14 +168,16 @@ def send_to_max(chat_id, text, files_data=None):
                     headers={'Authorization': f'Bearer {MAX_BOT_TOKEN}'},
                     timeout=30
                 )
-                upload_url_resp.raise_for_status()
+                if upload_url_resp.status_code != 200:
+                    print(f"   ❌ Не удалось получить URL для загрузки: {upload_url_resp.status_code} - {upload_url_resp.text}")
+                    continue
+
                 upload_data = upload_url_resp.json()
                 upload_url = upload_data['url']
                 file_token = upload_data['token']
-                print(f"   ✅ Получен URL для загрузки {filename}: {upload_url[:50]}...")
+                print(f"   ✅ Получен URL для загрузки {filename}")
 
-                # ШАГ 2: Загрузить файл по полученному URL
-                # Используем PUT с бинарными данными
+                # ШАГ 2: Загрузить файл
                 headers_upload = {
                     'Authorization': f'Bearer {MAX_BOT_TOKEN}',
                     'Content-Type': mime_type,
@@ -165,16 +189,32 @@ def send_to_max(chat_id, text, files_data=None):
                     headers=headers_upload,
                     timeout=60
                 )
-                if upload_file_resp.status_code != 200:
+                if upload_file_resp.status_code == 401:
+                    # Попробуем без Bearer
+                    headers_upload_no_bearer = {
+                        'Authorization': MAX_BOT_TOKEN,
+                        'Content-Type': mime_type,
+                        'Content-Disposition': f'attachment; filename="{filename}"'
+                    }
+                    upload_file_resp = requests.put(
+                        upload_url,
+                        data=content,
+                        headers=headers_upload_no_bearer,
+                        timeout=60
+                    )
+                    if upload_file_resp.status_code == 200:
+                        print(f"   ✅ Файл загружен (без Bearer)")
+                    else:
+                        print(f"   ❌ Ошибка загрузки файла {filename}: {upload_file_resp.status_code} - {upload_file_resp.text}")
+                        continue
+                elif upload_file_resp.status_code != 200:
                     print(f"   ❌ Ошибка загрузки файла {filename}: {upload_file_resp.status_code} - {upload_file_resp.text}")
                     continue
+                else:
+                    print(f"   ✅ Файл {filename} загружен")
 
-                print(f"   ✅ Файл {filename} загружен, token: {file_token}")
-
-                # Небольшая пауза, чтобы файл обработался на сервере
                 time.sleep(0.5)
 
-                # ШАГ 3: Добавляем вложение в список
                 message_attachments.append({
                     'type': file_type,
                     'payload': {
@@ -185,29 +225,24 @@ def send_to_max(chat_id, text, files_data=None):
 
             except Exception as e:
                 print(f"🔥 Ошибка при обработке файла {filename}: {e}")
-                # Продолжаем с другими файлами
 
     # Формируем тело сообщения
     message_body = {}
     if text:
         message_body['text'] = text
-        message_body['format'] = 'html'  # можно использовать HTML-разметку
+        message_body['format'] = 'html'
     if message_attachments:
         message_body['attachments'] = message_attachments
 
-    # Если нет ни текста, ни вложений — нечего отправлять
     if not message_body:
         return {"ok": False, "error": "Нет контента для отправки", "skipped": True}
 
-    # Отправляем сообщение
+    # Отправка финального сообщения
     try:
         send_msg_resp = requests.post(
             f"https://platform-api.max.ru/messages?chat_id={chat_id}",
-            headers={
-                'Authorization': f'Bearer {MAX_BOT_TOKEN}',
-                'Content-Type': 'application/json'
-            },
-            data=json.dumps(message_body),
+            headers={'Authorization': f'Bearer {MAX_BOT_TOKEN}', 'Content-Type': 'application/json'},
+            json=message_body,
             timeout=30
         )
         if send_msg_resp.status_code == 200:
@@ -292,10 +327,8 @@ def create_post():
 
         post_text = get_post_template(category, module, lesson)
 
-        # Отправка в Telegram (с файлами)
         tg_result = send_to_telegram(telegram_chat_id, post_text, files_data)
 
-        # Отправка в MAX (теперь с файлами)
         max_result = {"ok": False, "skipped": True}
         if max_chat_id and MAX_BOT_TOKEN:
             max_result = send_to_max(max_chat_id, post_text, files_data)
