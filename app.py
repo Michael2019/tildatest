@@ -66,6 +66,32 @@ def get_post_template(category, module, lesson):
         print(f"Ошибка шаблона: {e}")
         return f"{category}, модуль {module}, занятие {lesson}"
 
+# ============= ФУНКЦИЯ УСЕЧЕНИЯ ТЕКСТА ПО АБЗАЦАМ =============
+def trim_text_to_limit(main_text, signature, max_length):
+    """
+    Удаляет абзацы из main_text, чтобы main_text + signature вписался в max_length.
+    signature добавляется в конце.
+    Возвращает итоговую строку.
+    """
+    full = main_text + signature
+    if len(full) <= max_length:
+        return full
+
+    # Разбиваем основной текст на абзацы (разделитель \n\n)
+    paragraphs = main_text.split('\n\n')
+    # Пока суммарная длина (оставшиеся абзацы + подпись) превышает лимит, удаляем последний абзац
+    while paragraphs and len('\n\n'.join(paragraphs) + signature) > max_length:
+        paragraphs.pop()
+
+    trimmed_main = '\n\n'.join(paragraphs)
+    # Если после удаления всех абзацев всё равно превышает, оставляем только подпись
+    if len(trimmed_main + signature) > max_length:
+        # Если даже подпись слишком длинная (редко), обрезаем её посимвольно
+        if len(signature) > max_length:
+            signature = signature[:max_length - 3] + '...'
+        return signature
+    return trimmed_main + signature
+
 # ============= ОТПРАВКА В TELEGRAM =============
 def send_to_telegram(chat_id, text, files_data):
     try:
@@ -279,7 +305,8 @@ def create_post():
     try:
         current_username = get_jwt_identity()
         claims = get_jwt()
-        print(f"👤 {current_username} (роль: {claims.get('role')}) создаёт пост")
+        role = claims.get('role', '').strip()
+        print(f"👤 {current_username} (роль: {role}) создаёт пост")
 
         category = request.form.get('category', '')
         module = request.form.get('module', '')
@@ -303,35 +330,43 @@ def create_post():
         if not telegram_chat_id:
             return jsonify({"error": "Не указан ID канала Telegram", "ok": False}), 400
 
-        # Получаем базовый текст из шаблона
-        post_text = get_post_template(category, module, lesson)
+        # 1. Получаем базовый текст из шаблона
+        base_text = get_post_template(category, module, lesson)
 
-        # Формируем хэштеги
+        # 2. Добавляем хэштеги дня/времени и категории
         tags = []
         if weekday and time_val:
-            # Хэштег дня недели и времени: #воскресенье_10_15
             weekday_lower = weekday.lower()
             time_clean = time_val.replace(':', '_')
             tags.append(f"#{weekday_lower}_{time_clean}")
-
         if category:
-            # Хэштег категории: заменяем пробелы на подчёркивания, убираем другие пробелы
             category_tag = re.sub(r'[^\w\s-]', '', category)  # удаляем лишние символы
             category_tag = category_tag.replace(' ', '_')
             tags.append(f"#{category_tag}")
-
         if tags:
-            # Собираем строку с хэштегами (через пробел) и добавляем перед текстом (один перенос строки)
             tags_line = ' '.join(tags)
-            post_text = f"{tags_line}\n{post_text}"
+            full_text = f"{tags_line}\n{base_text}"
+        else:
+            full_text = base_text
+
+        # 3. Добавляем подпись преподавателя (если роль не пустая и не служебная)
+        signature = ""
+        if role and role.lower() not in ('admin', 'user', 'moderator'):
+            signature = f"\n\nВаш преподаватель {role}"
+
+        # 4. Определяем лимит в зависимости от наличия файлов
+        max_len = 1024 if files_data else 4096
+
+        # 5. Обрезаем текст по абзацам, сохраняя подпись
+        final_text = trim_text_to_limit(full_text, signature, max_len)
 
         # Отправка в Telegram
-        tg_result = send_to_telegram(telegram_chat_id, post_text, files_data)
+        tg_result = send_to_telegram(telegram_chat_id, final_text, files_data)
 
         # Отправка в MAX
         max_result = {"ok": False, "skipped": True}
         if max_chat_id and MAX_BOT_TOKEN:
-            max_result = send_to_max(max_chat_id, post_text, files_data)
+            max_result = send_to_max(max_chat_id, final_text, files_data)
 
         all_ok = (tg_result.get('ok', False) or tg_result.get('skipped', False)) and \
                  (max_result.get('ok', False) or max_result.get('skipped', False))
