@@ -5,3 +5,5 @@ gunicorn
 Flask-JWT-Extended
 python-dotenv
 pandas
+maxapi
+httpx
