@@ -174,10 +174,10 @@ def send_to_max(chat_id, text, files_data=None):
 
                 upload_data = upload_url_resp.json()
                 upload_url = upload_data['url']
-                file_token = upload_data['token']
-                print(f"   ✅ Получен URL для загрузки {filename}")
+                file_token = upload_data['token']  # Сохраняем токен из первого ответа
+                print(f"   ✅ Получен URL для загрузки {filename}, token={file_token}")
 
-                # ШАГ 2: Загрузить файл (без Bearer)
+                # ШАГ 2: Загрузить файл
                 headers_upload = {
                     'Authorization': MAX_BOT_TOKEN,
                     'Content-Type': mime_type,
@@ -198,6 +198,7 @@ def send_to_max(chat_id, text, files_data=None):
                 # Пауза, чтобы файл обработался на сервере
                 time.sleep(1.0)
 
+                # Используем токен из первого ответа
                 message_attachments.append({
                     'type': file_type,
                     'payload': {
