@@ -22,7 +22,7 @@ app.config['JWT_SECRET_KEY'] = config.config.JWT_SECRET_KEY or "super-secret-dev
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = config.config.JWT_ACCESS_TOKEN_EXPIRES
 jwt = JWTManager(app)
 
-# Обработчики ошибок JWT (без изменений, оставляем для отладки)
+# Обработчики ошибок JWT (без изменений)
 @jwt.unauthorized_loader
 def unauthorized_callback(reason):
     print(f"🚫 JWT unauthorized: {reason}")
@@ -66,7 +66,7 @@ def get_post_template(category, module, lesson):
 
 # ============= ОТПРАВКА В TELEGRAM =============
 def send_to_telegram(chat_id, text, files_data):
-    # (Код без изменений, он работает)
+    # (код без изменений)
     try:
         print(f"📱 send_to_telegram: chat_id={chat_id}, files={len(files_data)}")
         if files_data:
@@ -114,7 +114,7 @@ def send_to_telegram(chat_id, text, files_data):
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
-# ============= ОТПРАВКА В MAX (ФИНАЛЬНАЯ ВЕРСИЯ) =============
+# ============= ОТПРАВКА В MAX (ИСПРАВЛЕННАЯ) =============
 def send_to_max(chat_id, text, files_data):
     try:
         print(f"📱 send_to_max: начало, chat_id={chat_id}, files={len(files_data)}")
@@ -122,11 +122,10 @@ def send_to_max(chat_id, text, files_data):
             print("❌ MAX_BOT_TOKEN не задан")
             return {"ok": False, "error": "MAX_BOT_TOKEN not configured", "skipped": True}
 
-        # Если есть файлы, пробуем отправить первый как фото
         if files_data:
             filename, content, mime_type = files_data[0]
             if 'image' in mime_type:
-                # Шаг 1: Получаем URL для загрузки (тип image)
+                # 1. Получаем upload_url
                 print("🔼 Запрос upload_url для фото...")
                 headers = {'Authorization': MAX_BOT_TOKEN}
                 params = {'type': 'image'}
@@ -141,7 +140,7 @@ def send_to_max(chat_id, text, files_data):
                     print("❌ Нет upload_url в ответе")
                     return send_text_to_max(chat_id, text)
 
-                # Шаг 2: Загружаем файл (поле data — согласно статье на Relaya)
+                # 2. Загружаем файл (поле data)
                 print(f"🔼 Загрузка фото на {upload_url}...")
                 files_payload = {'data': (filename, content, mime_type)}
                 file_resp = requests.post(upload_url, files=files_payload, timeout=30)
@@ -151,22 +150,30 @@ def send_to_max(chat_id, text, files_data):
                     print("❌ Ошибка загрузки фото")
                     return send_text_to_max(chat_id, text)
 
-                # Получаем token из ответа загрузки
+                # Парсим ответ для извлечения token
                 file_data = file_resp.json()
-                token = file_data.get('token')
+                token = None
+                # В ответе MAX: {"photos": {"...": {"token": "..."}}}
+                if 'photos' in file_data and file_data['photos']:
+                    # Берём первый ключ (photo_id) и его token
+                    photo_id = next(iter(file_data['photos']))
+                    token = file_data['photos'][photo_id].get('token')
                 if not token:
-                    # Возможный альтернативный ответ
-                    token = file_data.get('payload', {}).get('token') or file_data.get('file_id')
-                    if not token:
-                        print("❌ Нет token в ответе загрузки")
-                        return send_text_to_max(chat_id, text)
+                    # fallback: прямой token или file_id
+                    token = file_data.get('token') or file_data.get('file_id')
+                if not token:
+                    print("❌ Не удалось извлечь token из ответа загрузки")
+                    return send_text_to_max(chat_id, text)
 
                 print(f"   получен token: {token[:20]}...")
 
-                # Шаг 3: Отправляем сообщение с вложением
+                # Небольшая пауза, чтобы файл обработался (рекомендация из статей)
+                time.sleep(0.5)
+
+                # 3. Отправляем сообщение с вложением
                 print("📤 Отправка сообщения с фото...")
                 payload = {
-                    'chat_id': str(chat_id),  # chat_id как строка (важно!)
+                    'chat_id': str(chat_id),  # пробуем как строку
                     'text': text,
                     'attachments': [{
                         'type': 'image',
@@ -184,7 +191,7 @@ def send_to_max(chat_id, text, files_data):
                 if send_resp.status_code == 200:
                     return {"ok": True, "result": send_resp.json()}
                 else:
-                    # Если не удалось, пробуем отправить как число (старый вариант)
+                    # Если не удалось, пробуем отправить как число
                     print("⚠️ Отправка с chat_id как строка не удалась, пробуем как число...")
                     payload['chat_id'] = int(chat_id)
                     send_resp = requests.post(
@@ -212,10 +219,10 @@ def send_to_max(chat_id, text, files_data):
         return {"ok": False, "error": str(e)}
 
 def send_text_to_max(chat_id, text):
-    """Отправка только текста (проверенный рабочий способ)"""
+    """Отправка только текста (пробуем chat_id как строку)"""
     try:
         print("📝 Отправка текстового сообщения в MAX через прямые запросы")
-        payload = {'chat_id': int(chat_id), 'text': text, 'format': 'html'}
+        payload = {'chat_id': str(chat_id), 'text': text, 'format': 'html'}
         response = requests.post(
             f"{MAX_API_URL}/messages",
             headers={'Authorization': MAX_BOT_TOKEN},
@@ -226,13 +233,25 @@ def send_text_to_max(chat_id, text):
         if response.status_code == 200:
             return {"ok": True, "result": response.json()}
         else:
-            return {"ok": False, "error": response.text}
+            # Если не сработало как строка, пробуем как число
+            payload['chat_id'] = int(chat_id)
+            response = requests.post(
+                f"{MAX_API_URL}/messages",
+                headers={'Authorization': MAX_BOT_TOKEN},
+                json=payload,
+                timeout=10
+            )
+            print(f"   повторная отправка (число): статус {response.status_code}, ответ: {response.text[:200]}")
+            if response.status_code == 200:
+                return {"ok": True, "result": response.json()}
+            else:
+                return {"ok": False, "error": response.text}
     except Exception as e:
         print(f"🔥 Ошибка в send_text_to_max: {e}")
         return {"ok": False, "error": str(e)}
 
 # ============= АВТОРИЗАЦИЯ И ОСНОВНЫЕ ЭНДПОИНТЫ =============
-# (остальной код без изменений, он рабочий)
+# (код без изменений, рабочий)
 @app.route('/api/login', methods=['POST'])
 def login():
     try:
@@ -274,7 +293,6 @@ def me():
     except Exception as e:
         return jsonify({"error": str(e), "ok": False}), 500
 
-# ============= ОСНОВНОЙ ЭНДПОИНТ =============
 @app.route('/post', methods=['POST'])
 @jwt_required()
 def create_post():
@@ -326,7 +344,6 @@ def create_post():
         traceback.print_exc()
         return jsonify({"error": str(e), "ok": False}), 500
 
-# ============= СТАРЫЙ ЭНДПОИНТ (ДЛЯ СОВМЕСТИМОСТИ) =============
 @app.route('/', methods=['POST'])
 def handle_post_legacy():
     try:
