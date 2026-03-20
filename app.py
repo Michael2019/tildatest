@@ -127,8 +127,8 @@ def send_to_max(chat_id, text, files_data=None):
     token_preview = MAX_BOT_TOKEN[:5] + "..." if len(MAX_BOT_TOKEN) > 5 else MAX_BOT_TOKEN
     print(f"🔑 Токен MAX (первые 5 символов): {token_preview}")
 
-    # Тестовая отправка текста для проверки токена
-    test_headers = {'Authorization': f'Bearer {MAX_BOT_TOKEN}', 'Content-Type': 'application/json'}
+    # Тестовая отправка текста для проверки токена (без Bearer)
+    test_headers = {'Authorization': MAX_BOT_TOKEN, 'Content-Type': 'application/json'}
     test_payload = {"text": "🔄 Проверка соединения с MAX"}
     try:
         test_resp = requests.post(
@@ -161,11 +161,11 @@ def send_to_max(chat_id, text, files_data=None):
                 continue
 
             try:
-                # ШАГ 1: Получить URL для загрузки
+                # ШАГ 1: Получить URL для загрузки (без Bearer)
                 upload_url_resp = requests.post(
                     "https://platform-api.max.ru/uploads",
                     params={'type': file_type},
-                    headers={'Authorization': f'Bearer {MAX_BOT_TOKEN}'},
+                    headers={'Authorization': MAX_BOT_TOKEN},
                     timeout=30
                 )
                 if upload_url_resp.status_code != 200:
@@ -177,9 +177,9 @@ def send_to_max(chat_id, text, files_data=None):
                 file_token = upload_data['token']
                 print(f"   ✅ Получен URL для загрузки {filename}")
 
-                # ШАГ 2: Загрузить файл
+                # ШАГ 2: Загрузить файл (без Bearer)
                 headers_upload = {
-                    'Authorization': f'Bearer {MAX_BOT_TOKEN}',
+                    'Authorization': MAX_BOT_TOKEN,
                     'Content-Type': mime_type,
                     'Content-Disposition': f'attachment; filename="{filename}"'
                 }
@@ -189,31 +189,14 @@ def send_to_max(chat_id, text, files_data=None):
                     headers=headers_upload,
                     timeout=60
                 )
-                if upload_file_resp.status_code == 401:
-                    # Попробуем без Bearer
-                    headers_upload_no_bearer = {
-                        'Authorization': MAX_BOT_TOKEN,
-                        'Content-Type': mime_type,
-                        'Content-Disposition': f'attachment; filename="{filename}"'
-                    }
-                    upload_file_resp = requests.put(
-                        upload_url,
-                        data=content,
-                        headers=headers_upload_no_bearer,
-                        timeout=60
-                    )
-                    if upload_file_resp.status_code == 200:
-                        print(f"   ✅ Файл загружен (без Bearer)")
-                    else:
-                        print(f"   ❌ Ошибка загрузки файла {filename}: {upload_file_resp.status_code} - {upload_file_resp.text}")
-                        continue
-                elif upload_file_resp.status_code != 200:
+                if upload_file_resp.status_code != 200:
                     print(f"   ❌ Ошибка загрузки файла {filename}: {upload_file_resp.status_code} - {upload_file_resp.text}")
                     continue
                 else:
                     print(f"   ✅ Файл {filename} загружен")
 
-                time.sleep(0.5)
+                # Пауза, чтобы файл обработался на сервере
+                time.sleep(1.0)
 
                 message_attachments.append({
                     'type': file_type,
@@ -237,11 +220,11 @@ def send_to_max(chat_id, text, files_data=None):
     if not message_body:
         return {"ok": False, "error": "Нет контента для отправки", "skipped": True}
 
-    # Отправка финального сообщения
+    # Отправка финального сообщения (без Bearer)
     try:
         send_msg_resp = requests.post(
             f"https://platform-api.max.ru/messages?chat_id={chat_id}",
-            headers={'Authorization': f'Bearer {MAX_BOT_TOKEN}', 'Content-Type': 'application/json'},
+            headers={'Authorization': MAX_BOT_TOKEN, 'Content-Type': 'application/json'},
             json=message_body,
             timeout=30
         )
