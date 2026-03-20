@@ -147,7 +147,6 @@ def send_to_max(chat_id, text, files_data=None):
 
     if files_data:
         for filename, content, mime_type in files_data:
-            # Определяем тип
             if 'image' in mime_type:
                 file_type = 'image'
             elif 'video' in mime_type:
@@ -169,13 +168,13 @@ def send_to_max(chat_id, text, files_data=None):
                     print(f"   ❌ Не удалось получить URL: {upload_req.status_code} - {upload_req.text[:100]}")
                     continue
                 upload_data = upload_req.json()
-                # Проверяем наличие нужных полей
-                if 'url' not in upload_data or 'token' not in upload_data:
-                    print(f"   ❌ Ответ /uploads не содержит url или token: {upload_data}")
+                if 'url' not in upload_data:
+                    print(f"   ❌ Ответ /uploads не содержит url: {upload_data}")
                     continue
                 upload_url = upload_data['url']
-                file_token = upload_data['token']
-                print(f"   ✅ URL получен, token={file_token[:10]}...")
+                # Токен может быть сразу (для video/audio) или прийти после загрузки
+                file_token = upload_data.get('token')  # может быть None
+                print(f"   ✅ URL получен, token={'есть' if file_token else 'нет'}")
 
                 # 2. Загружаем файл
                 print(f"   → Загружаем файл {filename} ({len(content)} байт)")
@@ -194,10 +193,22 @@ def send_to_max(chat_id, text, files_data=None):
                     print(f"   ❌ Ошибка загрузки: {upload_file_resp.status_code} - {upload_file_resp.text[:100]}")
                     continue
 
-                print(f"   ✅ Файл загружен, ждём 1 секунду...")
+                # Если токен не был получен на первом шаге, пробуем извлечь из ответа PUT
+                if not file_token:
+                    try:
+                        upload_result = upload_file_resp.json()
+                        # В ответе может быть поле token, либо другое
+                        file_token = upload_result.get('token')
+                        if not file_token:
+                            print(f"   ⚠️ Токен не найден в ответе загрузки: {upload_result}")
+                            continue
+                    except:
+                        print(f"   ⚠️ Не удалось разобрать ответ загрузки как JSON")
+                        continue
+
+                print(f"   ✅ Файл загружен, token={file_token[:10]}...")
                 time.sleep(1.0)
 
-                # 3. Добавляем вложение
                 message_attachments.append({
                     'type': file_type,
                     'payload': {
@@ -212,7 +223,7 @@ def send_to_max(chat_id, text, files_data=None):
                 import traceback
                 traceback.print_exc()
 
-    # Формируем тело сообщения
+    # Формируем сообщение
     message_body = {}
     if text:
         message_body['text'] = text
