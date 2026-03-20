@@ -188,12 +188,19 @@ def send_to_max(chat_id, text, files_data=None):
                     print(f"   ❌ Ошибка загрузки: {upload_file_resp.status_code} - {upload_file_resp.text[:200]}")
                     continue
 
-                # Из ответа получаем token (или id)
+                # Из ответа получаем token из поля photos
                 upload_result = upload_file_resp.json()
                 print(f"   ✅ Ответ загрузки: {upload_result}")
-                file_token = upload_result.get('token') or upload_result.get('id')
+                photos = upload_result.get('photos')
+                if not photos:
+                    print(f"   ❌ В ответе загрузки нет поля 'photos'")
+                    continue
+                # Берём первый ключ из photos
+                first_photo_key = next(iter(photos))
+                token_info = photos[first_photo_key]
+                file_token = token_info.get('token')
                 if not file_token:
-                    print(f"   ❌ В ответе загрузки нет token или id: {upload_result}")
+                    print(f"   ❌ В ответе загрузки нет token в photos")
                     continue
 
                 print(f"   ✅ Файл загружен, token={file_token[:10]}...")
