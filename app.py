@@ -16,8 +16,8 @@ import auth
 app = Flask(__name__)
 CORS(app, origins="*", allow_headers=["Authorization", "Content-Type"])
 
-# Настройка JWT (с резервным значением, чтобы сервер запускался даже без переменной)
-app.config['JWT_SECRET_KEY'] = config.config.JWT_SECRET_KEY or "super-secret-dev-key"
+# Настройка JWT (с резервным значением, чтобы сервер гарантированно запустился)
+app.config['JWT_SECRET_KEY'] = config.config.JWT_SECRET_KEY or "super-secret-dev-key-change-in-production"
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = config.config.JWT_ACCESS_TOKEN_EXPIRES
 jwt = JWTManager(app)
 
@@ -41,8 +41,7 @@ def expired_token_callback(jwt_header, jwt_payload):
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
-# Базовый URL для MAX API (проверено в документации)
-MAX_API_URL = "https://platform-api.max.ru"
+MAX_API_URL = "https://platform-api.max.ru"          # базовый URL для MAX API
 SHEETS_CSV_URL = os.environ.get("SHEETS_CSV_URL")
 
 # ============= ФУНКЦИИ ОТПРАВКИ =============
@@ -96,6 +95,9 @@ def send_to_max(chat_id, text, files):
             print("❌ MAX_BOT_TOKEN не задан, пропускаем MAX")
             return {"ok": False, "error": "MAX_BOT_TOKEN not configured", "skipped": True}
 
+        # Проверим chat_id (просто логируем)
+        print(f"   Проверка chat_id: {chat_id} (тип: {type(chat_id)})")
+
         # Если есть файлы, отправляем первый как медиа
         if files and len(files) > 0:
             file = files[0]
@@ -109,7 +111,7 @@ def send_to_max(chat_id, text, files):
             else:
                 media_type = 'file'
 
-            # Шаг 1: Получаем upload URL с указанием типа
+            # Шаг 1: Получаем URL для загрузки с указанием типа
             print(f"🔼 Запрос upload_url с type={media_type}...")
             upload_resp = requests.post(
                 f"{MAX_API_URL}/uploads?type={media_type}",
@@ -120,20 +122,11 @@ def send_to_max(chat_id, text, files):
 
             if upload_resp.status_code == 200:
                 upload_data = upload_resp.json()
-                upload_url = upload_data.get('upload_url')
-                file_token = upload_data.get('token') or upload_data.get('file_id')
+                # В ответе приходит поле "url" (не upload_url!)
+                upload_url = upload_data.get('url')
+                print(f"   получен upload_url: {upload_url}")
 
-                # Если есть прямой file_id без загрузки
-                if file_token and not upload_url:
-                    payload = {
-                        'chat_id': chat_id,
-                        'text': text,
-                        'attachments': [{
-                            'type': media_type,
-                            'payload': {'file_id': file_token}
-                        }]
-                    }
-                elif upload_url:
+                if upload_url:
                     # Шаг 2: загружаем файл
                     print(f"🔼 Загрузка файла на {upload_url}...")
                     file_resp = requests.post(
@@ -159,11 +152,13 @@ def send_to_max(chat_id, text, files):
                             print("❌ Не получен file_id после загрузки")
                             payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
                     else:
+                        print("❌ Ошибка загрузки файла, отправляем только текст")
                         payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
                 else:
-                    print("❌ Не получен upload_url или file_id")
+                    print("❌ Не получен upload_url, отправляем только текст")
                     payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
             else:
+                print("❌ Ошибка получения upload_url, отправляем только текст")
                 payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
         else:
             payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
@@ -177,7 +172,11 @@ def send_to_max(chat_id, text, files):
             timeout=10
         )
         print(f"   статус: {response.status_code}, ответ: {response.text[:200]}")
-        return response.json() if response.status_code == 200 else {"ok": False, "error": response.text}
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"ok": False, "error": response.text}
 
     except Exception as e:
         print(f"🔥 Исключение в send_to_max: {e}")
