@@ -66,80 +66,63 @@ def get_post_template(category, module, lesson):
         print(f"Ошибка шаблона: {e}")
         return f"{category}, модуль {module}, занятие {lesson}"
 
-# ============= ФУНКЦИЯ УСЕЧЕНИЯ ТЕКСТА ПО АБЗАЦАМ (С СОХРАНЕНИЕМ ХЭШТЕГОВ И ПОДПИСИ) =============
-def trim_text_to_limit(main_text, signature, max_length):
+# ============= НОВАЯ ФУНКЦИЯ УСЕЧЕНИЯ ТЕКСТА =============
+def trim_text_to_limit(tags, main_text, signature, max_length):
     """
-    Удаляет абзацы из основного текста, сохраняя первую строку (хэштеги) и подпись.
-    Если после удаления всех абзацев лимит всё ещё превышен, последний абзац обрезается по словам.
+    Обрезает текст, оставляя tags и signature обязательно.
+    main_text укорачивается по абзацам (удаляются последние абзацы).
     Возвращает итоговую строку.
     """
-    full = main_text + signature
-    if len(full) <= max_length:
-        return full
+    # Если tags + signature уже превышают лимит – обрезаем signature
+    base_len = len(tags) + len(signature)
+    if base_len > max_length:
+        available_for_signature = max_length - len(tags)
+        if available_for_signature <= 0:
+            # Обрезаем tags
+            tags = tags[:max_length - 3] + '...' if max_length > 3 else ''
+            signature = ''
+        else:
+            signature = signature[:available_for_signature - 3] + '...' if available_for_signature > 3 else ''
+        return tags + signature
 
-    # Разделяем на первую строку (хэштеги) и остальной текст
-    lines = main_text.split('\n', 1)
-    header = lines[0]  # первая строка — хэштеги
-    body = lines[1] if len(lines) > 1 else ""
-
-    # Если нет тела, то обрезаем header по словам
-    if not body:
-        if len(header + signature) > max_length:
-            words = header.split()
-            truncated = ""
-            for word in words:
-                if len(truncated + ' ' + word + signature) <= max_length:
-                    truncated += (' ' + word) if truncated else word
-                else:
-                    break
-            if truncated:
-                return truncated + signature
-            else:
-                # Если даже одно слово не влезает, оставляем только подпись
-                return signature
-        return header + signature
-
-    # Разбиваем тело на абзацы (разделитель \n\n)
-    paragraphs = body.split('\n\n')
+    # Разбиваем основной текст на абзацы (по \n\n)
+    paragraphs = main_text.split('\n\n')
     # Удаляем абзацы с конца, пока не влезет
-    while paragraphs and len(header + '\n\n' + '\n\n'.join(paragraphs) + signature) > max_length:
-        removed = paragraphs.pop()
-        print(f"   ✂️ Удалён абзац (длина {len(removed)} символов)")
+    while paragraphs:
+        current_main = '\n\n'.join(paragraphs)
+        total = len(tags) + len(current_main) + len(signature)
+        # Добавляем разделители, если соответствующие части не пусты
+        if tags and current_main:
+            total += 2  # для \n\n
+        if current_main and signature:
+            total += 2  # для \n\n
+        if total <= max_length:
+            break
+        paragraphs.pop()
 
-    # Если после удаления всех абзацев всё равно не влезает — обрезаем последний абзац по словам
-    if paragraphs:
-        candidate = header + '\n\n' + '\n\n'.join(paragraphs) + signature
-        if len(candidate) > max_length:
-            # Обрезаем последний абзац по словам
-            last_para = paragraphs[-1]
-            words = last_para.split()
-            truncated = ""
-            for word in words:
-                test_para = (truncated + ' ' + word).strip()
-                test_body = '\n\n'.join(paragraphs[:-1] + [test_para]) if paragraphs[:-1] else test_para
-                test_full = header + '\n\n' + test_body + signature
-                if len(test_full) <= max_length:
-                    truncated = test_para
-                else:
-                    break
-            if truncated:
-                paragraphs[-1] = truncated + '...'
-                print(f"   ✂️ Последний абзац обрезан до {len(truncated) + 3} символов")
-            else:
-                # Если даже одно слово не влезает, удаляем последний абзац целиком
-                paragraphs.pop()
-                print(f"   ✂️ Удалён последний абзац целиком (не влезало ни слова)")
+    if not paragraphs:
+        current_main = ''
     else:
-        # Все абзацы удалены, остаётся только header + подпись
-        print(f"   ✂️ Удалены все абзацы, остаются хэштеги и подпись")
+        current_main = '\n\n'.join(paragraphs)
 
-    # Формируем итоговый текст
-    if paragraphs:
-        final_body = '\n\n'.join(paragraphs)
-        return header + '\n\n' + final_body + signature
-    else:
-        # Только хэштеги и подпись
-        return header + signature
+    # Формируем итоговую строку с разделителями
+    parts = []
+    if tags:
+        parts.append(tags)
+    if current_main:
+        if parts:
+            parts.append('\n\n')
+        parts.append(current_main)
+    if signature:
+        if parts:
+            parts.append('\n\n')
+        parts.append(signature)
+
+    final_text = ''.join(parts)
+    # На случай, если всё же превысили лимит (редко) – обрезаем посимвольно
+    if len(final_text) > max_length:
+        final_text = final_text[:max_length - 3] + '...'
+    return final_text
 
 # ============= ОТПРАВКА В TELEGRAM =============
 def send_to_telegram(chat_id, text, files_data):
@@ -379,10 +362,10 @@ def create_post():
         if not telegram_chat_id:
             return jsonify({"error": "Не указан ID канала Telegram", "ok": False}), 400
 
-        # 1. Получаем базовый текст из шаблона
+        # 1. Получаем базовый текст из шаблона (без хэштегов и подписи)
         base_text = get_post_template(category, module, lesson)
 
-        # 2. Добавляем хэштеги дня/времени и категории
+        # 2. Формируем строку хэштегов
         tags = []
         if weekday and time_val:
             weekday_lower = weekday.lower()
@@ -392,23 +375,18 @@ def create_post():
             category_tag = re.sub(r'[^\w\s-]', '', category)
             category_tag = category_tag.replace(' ', '_')
             tags.append(f"#{category_tag}")
-        if tags:
-            tags_line = ' '.join(tags)
-            full_text = f"{tags_line}\n{base_text}"
-        else:
-            full_text = base_text
+        tags_line = ' '.join(tags) if tags else ''
 
-        # 3. Добавляем подпись преподавателя (если роль не пустая и не служебная)
+        # 3. Подпись преподавателя
         signature = ""
         if role and role.lower() not in ('admin', 'user', 'moderator'):
             signature = f"\n\nВаш преподаватель {role}"
 
         # 4. Определяем лимит в зависимости от наличия файлов
         max_len = 1024 if files_data else 4096
-        print(f"   📏 Лимит текста: {max_len} символов (файлы={'да' if files_data else 'нет'})")
 
-        # 5. Обрезаем текст по абзацам, сохраняя хэштеги и подпись
-        final_text = trim_text_to_limit(full_text, signature, max_len)
+        # 5. Обрезаем текст с сохранением хэштегов и подписи
+        final_text = trim_text_to_limit(tags_line, base_text, signature, max_len)
 
         # Отправка в Telegram
         tg_result = send_to_telegram(telegram_chat_id, final_text, files_data)
@@ -432,11 +410,6 @@ def create_post():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e), "ok": False}), 500
-
-# ============= СТАРЫЙ ЭНДПОИНТ (ДЛЯ СОВМЕСТИМОСТИ) =============
-# @app.route('/', methods=['POST'])
-# def handle_post_legacy():
-#     pass
 
 @app.route('/test', methods=['GET'])
 def test():
