@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import csv
+import asyncio
 from io import BytesIO, StringIO
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -115,7 +116,7 @@ def send_to_telegram(chat_id, text, files_data):
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
-# ============= ОТПРАВКА В MAX =============
+# ============= ОТПРАВКА В MAX (С ИСПОЛЬЗОВАНИЕМ maxapi) =============
 def send_to_max(chat_id, text, files_data):
     try:
         print(f"📱 send_to_max: начало, chat_id={chat_id}, files={len(files_data)}")
@@ -132,7 +133,6 @@ def send_to_max(chat_id, text, files_data):
                 headers = {'Authorization': MAX_BOT_TOKEN}
                 params = {'type': 'image'}
                 upload_resp = requests.post(f"{MAX_API_URL}/uploads", headers=headers, params=params, timeout=10)
-                print(f"   статус: {upload_resp.status_code}, ответ: {upload_resp.text[:200]}")
                 if upload_resp.status_code != 200:
                     print("❌ Ошибка получения upload_url")
                     return send_text_to_max(chat_id, text)
@@ -147,20 +147,16 @@ def send_to_max(chat_id, text, files_data):
                 print(f"🔼 Загрузка фото на {upload_url}...")
                 files = {'photo': (filename, content, mime_type)}
                 file_resp = requests.post(upload_url, files=files, timeout=30)
-                print(f"   статус загрузки: {file_resp.status_code}, ответ: {file_resp.text[:500]}")
-
                 if file_resp.status_code != 200:
                     print("❌ Ошибка загрузки фото")
                     return send_text_to_max(chat_id, text)
 
                 file_data = file_resp.json()
-                # Ответ содержит photos: {"photo_id": {"token": "..."}}
                 photos = file_data.get('photos', {})
                 if not photos:
                     print("❌ Нет photos в ответе загрузки")
                     return send_text_to_max(chat_id, text)
 
-                # Получаем первый ключ (photo_id) и token
                 photo_id = list(photos.keys())[0]
                 token = photos[photo_id].get('token')
                 if not token:
@@ -169,9 +165,9 @@ def send_to_max(chat_id, text, files_data):
 
                 print(f"   получен token: {token[:20]}...")
 
-                # Шаг 3: отправляем сообщение с фото
+                # Шаг 3: отправляем сообщение с фото через прямой запрос (maxapi не поддерживает attachments)
                 payload = {
-                    'chat_id': int(chat_id),  # MAX ожидает число (в логах видим, что текст отправлялся как число)
+                    'chat_id': int(chat_id),
                     'text': text,
                     'attachments': [{
                         'type': 'image',
@@ -188,15 +184,12 @@ def send_to_max(chat_id, text, files_data):
                 if send_resp.status_code == 200:
                     return {"ok": True, "result": send_resp.json()}
                 else:
-                    # Если фото не отправилось, пробуем просто текст
-                    print("⚠️ Не удалось отправить фото, отправляем только текст")
                     return send_text_to_max(chat_id, text)
             else:
-                # Не фото, отправляем только текст
                 print(f"⚠️ Тип файла {mime_type} не фото, отправляем только текст")
                 return send_text_to_max(chat_id, text)
         else:
-            # Нет файлов, только текст
+            # Только текст: используем библиотеку maxapi
             return send_text_to_max(chat_id, text)
 
     except Exception as e:
@@ -206,27 +199,21 @@ def send_to_max(chat_id, text, files_data):
         return {"ok": False, "error": str(e)}
 
 def send_text_to_max(chat_id, text):
-    """Отправка только текста в MAX (chat_id как число)"""
+    """Отправка только текста через библиотеку maxapi"""
     try:
-        print("📝 Отправка текстового сообщения в MAX")
-        payload = {
-            'chat_id': int(chat_id),  # используем число, как ранее работало
-            'text': text,
-            'format': 'html'
-        }
-        response = requests.post(
-            f"{MAX_API_URL}/messages",
-            headers={'Authorization': MAX_BOT_TOKEN},
-            json=payload,
-            timeout=10
-        )
-        print(f"   статус: {response.status_code}, ответ: {response.text[:200]}")
-        if response.status_code == 200:
-            return {"ok": True, "result": response.json()}
-        else:
-            return {"ok": False, "error": response.text}
+        print("📝 Отправка текстового сообщения в MAX через maxapi")
+        from maxapi import Bot
+        bot = Bot(MAX_BOT_TOKEN)
+        # Асинхронный вызов
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(bot.send_message(chat_id=int(chat_id), text=text))
+        loop.close()
+        return {"ok": True, "result": str(result)}
     except Exception as e:
         print(f"🔥 Ошибка в send_text_to_max: {e}")
+        import traceback
+        traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
 # ============= АВТОРИЗАЦИЯ =============
