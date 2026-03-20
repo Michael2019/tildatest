@@ -41,7 +41,8 @@ def expired_token_callback(jwt_header, jwt_payload):
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
-MAX_API_URL = "https://botapi.max.ru"
+# ПРАВИЛЬНЫЙ базовый URL для MAX API [citation:6]
+MAX_API_URL = "https://platform-api.max.ru"
 SHEETS_CSV_URL = os.environ.get("SHEETS_CSV_URL")
 
 # ============= ФУНКЦИИ ОТПРАВКИ =============
@@ -88,7 +89,7 @@ def send_to_telegram(chat_id, text, files):
         return {"ok": False, "error": str(e)}
 
 def send_to_max(chat_id, text, files):
-    """Отправка в MAX Messenger (поддерживает один файл) с подробным логированием"""
+    """Отправка в MAX Messenger (поддерживает фото) с подробным логированием"""
     try:
         print(f"📱 send_to_max: начало, chat_id={chat_id}, text='{text[:50]}...', files={len(files)}")
         
@@ -98,24 +99,25 @@ def send_to_max(chat_id, text, files):
         
         print(f"🔑 MAX_BOT_TOKEN (первые 10 символов): {MAX_BOT_TOKEN[:10]}...")
         
-        # Если есть файлы, отправляем первый как медиа
+        # Если есть файлы, обрабатываем первый как медиа
         if files and len(files) > 0:
             file = files[0]
             mime_type = file.mimetype or 'image/jpeg'
             filename = file.filename or "unknown"
             print(f"📎 Обрабатываем файл: {filename}, MIME: {mime_type}")
             
+            # Определяем тип медиа для MAX
             if 'image' in mime_type:
-                media_type = 'photo'
+                media_type = 'image'
             elif 'video' in mime_type:
                 media_type = 'video'
             else:
                 media_type = 'file'
             
-            # Шаг 1: Получаем URL для загрузки
-            print("🔼 Шаг 1: запрос upload_url...")
+            # Шаг 1: Получаем URL для загрузки с параметром type [citation:1][citation:3]
+            print(f"🔼 Шаг 1: запрос upload_url с type={media_type}...")
             upload_response = requests.post(
-                f"{MAX_API_URL}/uploads",
+                f"{MAX_API_URL}/uploads?type={media_type}",  # Параметр в query
                 headers={'Authorization': MAX_BOT_TOKEN},
                 timeout=10
             )
@@ -124,15 +126,32 @@ def send_to_max(chat_id, text, files):
             
             if upload_response.status_code == 200:
                 upload_data = upload_response.json()
+                # В ответе может быть upload_url или file_id в зависимости от типа [citation:1]
                 upload_url = upload_data.get('upload_url')
-                print(f"   получен upload_url: {upload_url}")
+                file_token = upload_data.get('token') or upload_data.get('file_id')
                 
-                if upload_url:
-                    # Шаг 2: Загружаем файл
+                print(f"   получен upload_url: {upload_url}")
+                print(f"   получен token/file_id: {file_token}")
+                
+                # Для изображений может быть прямой file_id без загрузки [citation:1]
+                if file_token and not upload_url:
+                    # Сразу отправляем сообщение с file_token
+                    print("🔼 Получен прямой file_id, пропускаем шаг загрузки")
+                    payload = {
+                        'chat_id': chat_id,
+                        'text': text,
+                        'attachments': [
+                            {
+                                'type': media_type,
+                                'payload': {
+                                    'file_id': file_token
+                                }
+                            }
+                        ]
+                    }
+                elif upload_url:
+                    # Шаг 2: Загружаем файл на полученный URL
                     print("🔼 Шаг 2: загрузка файла...")
-                    # Важно: для загрузки нужно отправить файл как multipart/form-data
-                    # В stream может быть прочитан ранее? Но в этом запросе мы используем свежий поток.
-                    # Поскольку файл уже был прочитан в первом проходе? Нет, мы передаём оригинальный stream из request.files, он ещё не прочитан.
                     files_for_max = {'file': (filename, file.stream, mime_type)}
                     file_response = requests.post(upload_url, files=files_for_max, timeout=30)
                     print(f"   статус загрузки: {file_response.status_code}")
@@ -143,47 +162,38 @@ def send_to_max(chat_id, text, files):
                         file_id = file_data.get('file_id')
                         print(f"   получен file_id: {file_id}")
                         
-                        # Шаг 3: Отправляем сообщение с вложением
-                        print("🔼 Шаг 3: отправка сообщения с вложением...")
+                        # Шаг 3: Отправляем сообщение с вложением [citation:1][citation:9]
                         payload = {
                             'chat_id': chat_id,
                             'text': text,
                             'attachments': [
                                 {
                                     'type': media_type,
-                                    'payload': {'file_id': file_id}
+                                    'payload': {
+                                        'file_id': file_id
+                                    }
                                 }
                             ]
                         }
-                        print(f"   payload: {json.dumps(payload, ensure_ascii=False)[:200]}")
-                        
-                        response = requests.post(
-                            f"{MAX_API_URL}/messages/send",
-                            headers={'Authorization': MAX_BOT_TOKEN},
-                            json=payload,
-                            timeout=10
-                        )
-                        print(f"   статус отправки: {response.status_code}")
-                        print(f"   тело ответа: {response.text[:200]}")
-                        return response.json() if response.status_code == 200 else {"ok": False, "error": response.text}
                     else:
-                        print("❌ Ошибка загрузки файла")
+                        print("❌ Ошибка загрузки файла, отправляем только текст")
+                        payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
                 else:
-                    print("❌ upload_url не получен")
+                    print("❌ Не удалось получить upload_url или file_id")
+                    payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
             else:
-                print("❌ Ошибка получения upload_url")
+                print("❌ Ошибка получения upload_url, отправляем только текст")
+                payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
+        else:
+            # Нет файлов — отправляем только текст
+            payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
         
-        # Если нет файлов или не удалось загрузить — отправляем просто текст
-        print("📝 Отправка текстового сообщения без медиа...")
-        payload = {
-            'chat_id': chat_id,
-            'text': text,
-            'format': 'html'
-        }
-        print(f"   payload: {json.dumps(payload, ensure_ascii=False)}")
+        # Отправляем сообщение в MAX [citation:9]
+        print("📤 Отправка сообщения в MAX...")
+        print(f"   payload: {json.dumps(payload, ensure_ascii=False)[:200]}")
         
         response = requests.post(
-            f"{MAX_API_URL}/messages/send",
+            f"{MAX_API_URL}/messages",  # Правильный эндпоинт [citation:9]
             headers={'Authorization': MAX_BOT_TOKEN},
             json=payload,
             timeout=10
