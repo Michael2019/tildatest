@@ -63,7 +63,7 @@ def get_post_template(category, module, lesson):
         print(f"Ошибка шаблона: {e}")
         return f"{category}, модуль {module}, занятие {lesson}"
 
-# ============= ОТПРАВКА В TELEGRAM (С ПОДДЕРЖКОЙ БАЙТОВ) =============
+# ============= ОТПРАВКА В TELEGRAM =============
 def send_to_telegram(chat_id, text, files_data):
     """
     files_data: список кортежей (filename, content_bytes, mimetype)
@@ -91,7 +91,6 @@ def send_to_telegram(chat_id, text, files_data):
                     media_item['caption'] = text
                     media_item['parse_mode'] = 'HTML'
                 media.append(media_item)
-                # Для отправки в Telegram нужен файлоподобный объект
                 attachments[attach_name] = (filename, BytesIO(content), mime_type)
 
             if not media:
@@ -116,7 +115,7 @@ def send_to_telegram(chat_id, text, files_data):
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
-# ============= ОТПРАВКА В MAX (СИНХРОННО, БЕЗ ASYNCIO) =============
+# ============= ОТПРАВКА В MAX =============
 def send_to_max(chat_id, text, files_data):
     try:
         print(f"📱 send_to_max: начало, chat_id={chat_id}, files={len(files_data)}")
@@ -134,55 +133,63 @@ def send_to_max(chat_id, text, files_data):
                 params = {'type': 'image'}
                 upload_resp = requests.post(f"{MAX_API_URL}/uploads", headers=headers, params=params, timeout=10)
                 print(f"   статус: {upload_resp.status_code}, ответ: {upload_resp.text[:200]}")
-
-                if upload_resp.status_code == 200:
-                    upload_data = upload_resp.json()
-                    upload_url = upload_data.get('url')
-                    if upload_url:
-                        # Шаг 2: загружаем фото
-                        print(f"🔼 Загрузка фото на {upload_url}...")
-                        files = {'photo': (filename, content, mime_type)}
-                        file_resp = requests.post(upload_url, files=files, timeout=30)
-                        print(f"   статус загрузки: {file_resp.status_code}, ответ: {file_resp.text[:200]}")
-
-                        if file_resp.status_code == 200:
-                            file_data = file_resp.json()
-                            file_id = file_data.get('file_id') or file_data.get('photo_id')
-                            if file_id:
-                                print(f"   получен file_id: {file_id}")
-                                # Шаг 3: отправляем сообщение с фото
-                                payload = {
-                                    'chat_id': int(chat_id),  # MAX ожидает число
-                                    'text': text,
-                                    'attachments': [{
-                                        'type': 'image',
-                                        'payload': {'file_id': file_id}
-                                    }]
-                                }
-                                send_resp = requests.post(
-                                    f"{MAX_API_URL}/messages",
-                                    headers={'Authorization': MAX_BOT_TOKEN},
-                                    json=payload,
-                                    timeout=10
-                                )
-                                print(f"   статус отправки: {send_resp.status_code}, ответ: {send_resp.text[:200]}")
-                                if send_resp.status_code == 200:
-                                    return {"ok": True, "result": send_resp.json()}
-                                else:
-                                    # Если фото не отправилось, пробуем просто текст
-                                    print("⚠️ Не удалось отправить фото, отправляем только текст")
-                                    return send_text_to_max(chat_id, text)
-                            else:
-                                print("❌ Нет file_id в ответе после загрузки")
-                                return send_text_to_max(chat_id, text)
-                        else:
-                            print("❌ Ошибка загрузки фото")
-                            return send_text_to_max(chat_id, text)
-                    else:
-                        print("❌ Нет upload_url в ответе")
-                        return send_text_to_max(chat_id, text)
-                else:
+                if upload_resp.status_code != 200:
                     print("❌ Ошибка получения upload_url")
+                    return send_text_to_max(chat_id, text)
+
+                upload_data = upload_resp.json()
+                upload_url = upload_data.get('url')
+                if not upload_url:
+                    print("❌ Нет upload_url в ответе")
+                    return send_text_to_max(chat_id, text)
+
+                # Шаг 2: загружаем фото
+                print(f"🔼 Загрузка фото на {upload_url}...")
+                files = {'photo': (filename, content, mime_type)}
+                file_resp = requests.post(upload_url, files=files, timeout=30)
+                print(f"   статус загрузки: {file_resp.status_code}, ответ: {file_resp.text[:500]}")
+
+                if file_resp.status_code != 200:
+                    print("❌ Ошибка загрузки фото")
+                    return send_text_to_max(chat_id, text)
+
+                file_data = file_resp.json()
+                # Ответ содержит photos: {"photo_id": {"token": "..."}}
+                photos = file_data.get('photos', {})
+                if not photos:
+                    print("❌ Нет photos в ответе загрузки")
+                    return send_text_to_max(chat_id, text)
+
+                # Получаем первый ключ (photo_id) и token
+                photo_id = list(photos.keys())[0]
+                token = photos[photo_id].get('token')
+                if not token:
+                    print("❌ Нет token в ответе загрузки")
+                    return send_text_to_max(chat_id, text)
+
+                print(f"   получен token: {token[:20]}...")
+
+                # Шаг 3: отправляем сообщение с фото
+                payload = {
+                    'chat_id': int(chat_id),  # MAX ожидает число (в логах видим, что текст отправлялся как число)
+                    'text': text,
+                    'attachments': [{
+                        'type': 'image',
+                        'payload': {'file_id': token}
+                    }]
+                }
+                send_resp = requests.post(
+                    f"{MAX_API_URL}/messages",
+                    headers={'Authorization': MAX_BOT_TOKEN},
+                    json=payload,
+                    timeout=10
+                )
+                print(f"   статус отправки: {send_resp.status_code}, ответ: {send_resp.text[:200]}")
+                if send_resp.status_code == 200:
+                    return {"ok": True, "result": send_resp.json()}
+                else:
+                    # Если фото не отправилось, пробуем просто текст
+                    print("⚠️ Не удалось отправить фото, отправляем только текст")
                     return send_text_to_max(chat_id, text)
             else:
                 # Не фото, отправляем только текст
@@ -199,11 +206,11 @@ def send_to_max(chat_id, text, files_data):
         return {"ok": False, "error": str(e)}
 
 def send_text_to_max(chat_id, text):
-    """Отправка только текста в MAX"""
+    """Отправка только текста в MAX (chat_id как число)"""
     try:
         print("📝 Отправка текстового сообщения в MAX")
         payload = {
-            'chat_id': int(chat_id),
+            'chat_id': int(chat_id),  # используем число, как ранее работало
             'text': text,
             'format': 'html'
         }
@@ -284,7 +291,7 @@ def create_post():
         print(f"  MAX chat_id: {max_chat_id}")
         print(f"  файлов получено: {len(uploaded_files)}")
 
-        # === Читаем файлы в память ===
+        # Читаем файлы в память
         files_data = []
         for f in uploaded_files:
             content = f.read()
@@ -296,10 +303,10 @@ def create_post():
 
         post_text = get_post_template(category, module, lesson)
 
-        # === Отправка в Telegram ===
+        # Отправка в Telegram
         tg_result = send_to_telegram(telegram_chat_id, post_text, files_data)
 
-        # === Отправка в MAX ===
+        # Отправка в MAX
         max_result = {"ok": False, "skipped": True}
         if max_chat_id and MAX_BOT_TOKEN:
             max_result = send_to_max(max_chat_id, post_text, files_data)
