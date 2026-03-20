@@ -188,14 +188,13 @@ def send_to_max(chat_id, text, files_data=None):
                     print(f"   ❌ Ошибка загрузки: {upload_file_resp.status_code} - {upload_file_resp.text[:200]}")
                     continue
 
-                # Из ответа получаем token из поля photos
                 upload_result = upload_file_resp.json()
                 print(f"   ✅ Ответ загрузки: {upload_result}")
+                # Извлекаем token из структуры {'photos': {'key': {'token': ...}}}
                 photos = upload_result.get('photos')
                 if not photos:
                     print(f"   ❌ В ответе загрузки нет поля 'photos'")
                     continue
-                # Берём первый ключ из photos
                 first_photo_key = next(iter(photos))
                 token_info = photos[first_photo_key]
                 file_token = token_info.get('token')
@@ -303,6 +302,8 @@ def create_post():
         category = request.form.get('category', '')
         module = request.form.get('module', '')
         lesson = request.form.get('lesson', '')
+        weekday = request.form.get('weekday', '')
+        time_val = request.form.get('time', '')
         telegram_chat_id = request.form.get('chat_id', '')
         max_chat_id = request.form.get('max_chat_id', '')
         uploaded_files = request.files.getlist('media_files')
@@ -320,7 +321,14 @@ def create_post():
         if not telegram_chat_id:
             return jsonify({"error": "Не указан ID канала Telegram", "ok": False}), 400
 
+        # Формируем текст поста: сначала добавляем день и время, затем шаблон
         post_text = get_post_template(category, module, lesson)
+        if weekday and time_val:
+            # Преобразуем: "воскресенье" и "10:15" → "(#воскресенье_10_15)"
+            weekday_lower = weekday.lower()
+            time_clean = time_val.replace(':', '_')
+            prefix = f"(#{weekday_lower}_{time_clean})\n\n"
+            post_text = prefix + post_text
 
         tg_result = send_to_telegram(telegram_chat_id, post_text, files_data)
 
