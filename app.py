@@ -16,12 +16,12 @@ import auth
 app = Flask(__name__)
 CORS(app, origins="*", allow_headers=["Authorization", "Content-Type"])
 
-# Настройка JWT
-app.config['JWT_SECRET_KEY'] = config.config.JWT_SECRET_KEY
+# Настройка JWT (с резервным значением, чтобы сервер запускался даже без переменной)
+app.config['JWT_SECRET_KEY'] = config.config.JWT_SECRET_KEY or "super-secret-dev-key"
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = config.config.JWT_ACCESS_TOKEN_EXPIRES
 jwt = JWTManager(app)
 
-# Обработчики ошибок JWT
+# Обработчики ошибок JWT (для отладки)
 @jwt.unauthorized_loader
 def unauthorized_callback(reason):
     print(f"🚫 JWT unauthorized: {reason}")
@@ -41,7 +41,7 @@ def expired_token_callback(jwt_header, jwt_payload):
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
-# ПРАВИЛЬНЫЙ базовый URL для MAX API [citation:6]
+# Базовый URL для MAX API (проверено в документации)
 MAX_API_URL = "https://platform-api.max.ru"
 SHEETS_CSV_URL = os.environ.get("SHEETS_CSV_URL")
 
@@ -89,119 +89,96 @@ def send_to_telegram(chat_id, text, files):
         return {"ok": False, "error": str(e)}
 
 def send_to_max(chat_id, text, files):
-    """Отправка в MAX Messenger (поддерживает фото) с подробным логированием"""
+    """Отправка в MAX Messenger (поддерживает фото и видео)"""
     try:
         print(f"📱 send_to_max: начало, chat_id={chat_id}, text='{text[:50]}...', files={len(files)}")
-        
         if not MAX_BOT_TOKEN:
-            print("❌ send_to_max: MAX_BOT_TOKEN не задан или пустой")
+            print("❌ MAX_BOT_TOKEN не задан, пропускаем MAX")
             return {"ok": False, "error": "MAX_BOT_TOKEN not configured", "skipped": True}
-        
-        print(f"🔑 MAX_BOT_TOKEN (первые 10 символов): {MAX_BOT_TOKEN[:10]}...")
-        
-        # Если есть файлы, обрабатываем первый как медиа
+
+        # Если есть файлы, отправляем первый как медиа
         if files and len(files) > 0:
             file = files[0]
             mime_type = file.mimetype or 'image/jpeg'
             filename = file.filename or "unknown"
-            print(f"📎 Обрабатываем файл: {filename}, MIME: {mime_type}")
-            
-            # Определяем тип медиа для MAX
+
             if 'image' in mime_type:
                 media_type = 'image'
             elif 'video' in mime_type:
                 media_type = 'video'
             else:
                 media_type = 'file'
-            
-            # Шаг 1: Получаем URL для загрузки с параметром type [citation:1][citation:3]
-            print(f"🔼 Шаг 1: запрос upload_url с type={media_type}...")
-            upload_response = requests.post(
-                f"{MAX_API_URL}/uploads?type={media_type}",  # Параметр в query
+
+            # Шаг 1: Получаем upload URL с указанием типа
+            print(f"🔼 Запрос upload_url с type={media_type}...")
+            upload_resp = requests.post(
+                f"{MAX_API_URL}/uploads?type={media_type}",
                 headers={'Authorization': MAX_BOT_TOKEN},
                 timeout=10
             )
-            print(f"   статус ответа: {upload_response.status_code}")
-            print(f"   тело ответа: {upload_response.text[:200]}")
-            
-            if upload_response.status_code == 200:
-                upload_data = upload_response.json()
-                # В ответе может быть upload_url или file_id в зависимости от типа [citation:1]
+            print(f"   статус: {upload_resp.status_code}, ответ: {upload_resp.text[:200]}")
+
+            if upload_resp.status_code == 200:
+                upload_data = upload_resp.json()
                 upload_url = upload_data.get('upload_url')
                 file_token = upload_data.get('token') or upload_data.get('file_id')
-                
-                print(f"   получен upload_url: {upload_url}")
-                print(f"   получен token/file_id: {file_token}")
-                
-                # Для изображений может быть прямой file_id без загрузки [citation:1]
+
+                # Если есть прямой file_id без загрузки
                 if file_token and not upload_url:
-                    # Сразу отправляем сообщение с file_token
-                    print("🔼 Получен прямой file_id, пропускаем шаг загрузки")
                     payload = {
                         'chat_id': chat_id,
                         'text': text,
-                        'attachments': [
-                            {
-                                'type': media_type,
-                                'payload': {
-                                    'file_id': file_token
-                                }
-                            }
-                        ]
+                        'attachments': [{
+                            'type': media_type,
+                            'payload': {'file_id': file_token}
+                        }]
                     }
                 elif upload_url:
-                    # Шаг 2: Загружаем файл на полученный URL
-                    print("🔼 Шаг 2: загрузка файла...")
-                    files_for_max = {'file': (filename, file.stream, mime_type)}
-                    file_response = requests.post(upload_url, files=files_for_max, timeout=30)
-                    print(f"   статус загрузки: {file_response.status_code}")
-                    print(f"   тело ответа: {file_response.text[:200]}")
-                    
-                    if file_response.status_code == 200:
-                        file_data = file_response.json()
+                    # Шаг 2: загружаем файл
+                    print(f"🔼 Загрузка файла на {upload_url}...")
+                    file_resp = requests.post(
+                        upload_url,
+                        files={'file': (filename, file.stream, mime_type)},
+                        timeout=30
+                    )
+                    print(f"   статус загрузки: {file_resp.status_code}, ответ: {file_resp.text[:200]}")
+
+                    if file_resp.status_code == 200:
+                        file_data = file_resp.json()
                         file_id = file_data.get('file_id')
-                        print(f"   получен file_id: {file_id}")
-                        
-                        # Шаг 3: Отправляем сообщение с вложением [citation:1][citation:9]
-                        payload = {
-                            'chat_id': chat_id,
-                            'text': text,
-                            'attachments': [
-                                {
+                        if file_id:
+                            payload = {
+                                'chat_id': chat_id,
+                                'text': text,
+                                'attachments': [{
                                     'type': media_type,
-                                    'payload': {
-                                        'file_id': file_id
-                                    }
-                                }
-                            ]
-                        }
+                                    'payload': {'file_id': file_id}
+                                }]
+                            }
+                        else:
+                            print("❌ Не получен file_id после загрузки")
+                            payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
                     else:
-                        print("❌ Ошибка загрузки файла, отправляем только текст")
                         payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
                 else:
-                    print("❌ Не удалось получить upload_url или file_id")
+                    print("❌ Не получен upload_url или file_id")
                     payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
             else:
-                print("❌ Ошибка получения upload_url, отправляем только текст")
                 payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
         else:
-            # Нет файлов — отправляем только текст
             payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
-        
-        # Отправляем сообщение в MAX [citation:9]
+
+        # Отправляем сообщение в MAX
         print("📤 Отправка сообщения в MAX...")
-        print(f"   payload: {json.dumps(payload, ensure_ascii=False)[:200]}")
-        
         response = requests.post(
-            f"{MAX_API_URL}/messages",  # Правильный эндпоинт [citation:9]
+            f"{MAX_API_URL}/messages",
             headers={'Authorization': MAX_BOT_TOKEN},
             json=payload,
             timeout=10
         )
-        print(f"   статус отправки: {response.status_code}")
-        print(f"   тело ответа: {response.text[:200]}")
+        print(f"   статус: {response.status_code}, ответ: {response.text[:200]}")
         return response.json() if response.status_code == 200 else {"ok": False, "error": response.text}
-        
+
     except Exception as e:
         print(f"🔥 Исключение в send_to_max: {e}")
         import traceback
@@ -269,7 +246,7 @@ def get_post_template(category, module, lesson):
         print(f"Ошибка шаблона: {e}")
         return f"{category}, модуль {module}, занятие {lesson}"
 
-# ============= ЗАЩИЩЁННЫЙ ЭНДПОИНТ (публикация в оба мессенджера) =============
+# ============= ЗАЩИЩЁННЫЙ ЭНДПОИНТ =============
 @app.route('/post', methods=['POST'])
 @jwt_required()
 def create_post():
@@ -277,53 +254,41 @@ def create_post():
         current_username = get_jwt_identity()
         claims = get_jwt()
         print(f"👤 {current_username} (роль: {claims.get('role')}) создаёт пост")
-        
-        # Получаем данные из формы
+
         category = request.form.get('category', '')
         module = request.form.get('module', '')
         lesson = request.form.get('lesson', '')
         telegram_chat_id = request.form.get('chat_id', '')
         max_chat_id = request.form.get('max_chat_id', '')
         files = request.files.getlist('media_files')
-        
-        print(f"  Telegram chat_id: {telegram_chat_id}")
-        print(f"  MAX chat_id: {max_chat_id}")
-        print(f"  MAX_BOT_TOKEN определён: {'да' if MAX_BOT_TOKEN else 'нет'}")
-        if MAX_BOT_TOKEN:
-            print(f"  MAX_BOT_TOKEN (первые 10): {MAX_BOT_TOKEN[:10]}")
-        print(f"  файлов: {len(files)}")
-        
+
         if not telegram_chat_id:
             return jsonify({"error": "Не указан ID канала Telegram", "ok": False}), 400
-        
-        # Получаем текст поста
+
         post_text = get_post_template(category, module, lesson)
-        
-        # Отправка в Telegram
+
         tg_result = send_to_telegram(telegram_chat_id, post_text, files)
-        
-        # Отправка в MAX (если указан ID канала)
+
         max_result = {"ok": False, "skipped": True}
         if max_chat_id and MAX_BOT_TOKEN:
             max_result = send_to_max(max_chat_id, post_text, files)
-        
-        # Формируем общий ответ
+
         all_ok = (tg_result.get('ok', False) or tg_result.get('skipped', False)) and \
                  (max_result.get('ok', False) or max_result.get('skipped', False))
-        
+
         return jsonify({
             "ok": all_ok,
             "telegram": tg_result,
             "max": max_result
         }), 200
-        
+
     except Exception as e:
         print(f"🔥 /post error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e), "ok": False}), 500
 
-# ============= СТАРЫЙ ЭНДПОИНТ (для совместимости, без авторизации) =============
+# ============= СТАРЫЙ ЭНДПОИНТ (без авторизации) =============
 @app.route('/', methods=['POST'])
 def handle_post_legacy():
     try:
@@ -333,26 +298,26 @@ def handle_post_legacy():
         telegram_chat_id = request.form.get('chat_id', '')
         max_chat_id = request.form.get('max_chat_id', '')
         files = request.files.getlist('media_files')
-        
+
         if not telegram_chat_id:
             return jsonify({"error": "Не указан ID канала Telegram", "ok": False}), 400
-        
+
         post_text = get_post_template(category, module, lesson)
-        
+
         tg_result = send_to_telegram(telegram_chat_id, post_text, files)
         max_result = {"ok": False, "skipped": True}
         if max_chat_id and MAX_BOT_TOKEN:
             max_result = send_to_max(max_chat_id, post_text, files)
-        
+
         all_ok = (tg_result.get('ok', False) or tg_result.get('skipped', False)) and \
                  (max_result.get('ok', False) or max_result.get('skipped', False))
-        
+
         return jsonify({
             "ok": all_ok,
             "telegram": tg_result,
             "max": max_result
         }), 200
-        
+
     except Exception as e:
         print(f"🔥 / legacy error: {e}")
         return jsonify({"error": str(e), "ok": False}), 500
