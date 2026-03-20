@@ -66,61 +66,31 @@ def get_post_template(category, module, lesson):
         print(f"Ошибка шаблона: {e}")
         return f"{category}, модуль {module}, занятие {lesson}"
 
-# ============= УМНОЕ УСЕЧЕНИЕ ТЕКСТА ПО АБЗАЦАМ =============
+# ============= ФУНКЦИЯ УСЕЧЕНИЯ ТЕКСТА ПО АБЗАЦАМ =============
 def trim_text_to_limit(main_text, signature, max_length):
     """
     Удаляет абзацы из main_text, чтобы main_text + signature вписался в max_length.
-    Если после удаления всех абзацев всё ещё превышает, обрезает последний абзац по словам.
     signature добавляется в конце.
     Возвращает итоговую строку.
     """
-    # Если и так влезает — возвращаем как есть
-    if len(main_text + signature) <= max_length:
-        return main_text + signature
-    
-    print(f"   ✂️ Текст слишком длинный ({len(main_text + signature)} > {max_length}), усекаем...")
-    
-    # Разбиваем на абзацы
+    full = main_text + signature
+    if len(full) <= max_length:
+        return full
+
+    # Разбиваем основной текст на абзацы (разделитель \n\n)
     paragraphs = main_text.split('\n\n')
-    original_paragraphs_count = len(paragraphs)
-    
-    # Удаляем абзацы с конца, пока не влезет
+    # Пока суммарная длина (оставшиеся абзацы + подпись) превышает лимит, удаляем последний абзац
     while paragraphs and len('\n\n'.join(paragraphs) + signature) > max_length:
-        removed = paragraphs.pop()
-        print(f"      Удалён абзац (длина {len(removed)} символов)")
-    
-    # Если удалили все абзацы, но всё ещё не влезает
-    if not paragraphs:
-        print(f"      Все абзацы удалены, но всё ещё длинно, обрезаем подпись")
+        paragraphs.pop()
+
+    trimmed_main = '\n\n'.join(paragraphs)
+    # Если после удаления всех абзацев всё равно превышает, оставляем только подпись
+    if len(trimmed_main + signature) > max_length:
+        # Если даже подпись слишком длинная (редко), обрезаем её посимвольно
         if len(signature) > max_length:
             signature = signature[:max_length - 3] + '...'
         return signature
-    
-    trimmed_main = '\n\n'.join(paragraphs)
-    
-    # Если после удаления абзацев всё равно не влезает (редкий случай, когда один абзац слишком длинный)
-    if len(trimmed_main + signature) > max_length:
-        print(f"      Последний абзац слишком длинный, обрезаем по словам")
-        # Обрезаем последний абзац по словам
-        last_paragraph = paragraphs[-1]
-        words = last_paragraph.split()
-        truncated = ""
-        for word in words:
-            if len(truncated + ' ' + word + signature) <= max_length:
-                truncated += (' ' + word) if truncated else word
-            else:
-                break
-        if truncated:
-            paragraphs[-1] = truncated + '...'
-            trimmed_main = '\n\n'.join(paragraphs)
-        else:
-            # Если даже одно слово не влезает — оставляем только подпись
-            print(f"      Даже одно слово не влезает, оставляем только подпись")
-            return signature
-    
-    result = trimmed_main + signature
-    print(f"   ✅ После усечения: {len(result)} символов (удалено {original_paragraphs_count - len(paragraphs)} абзацев)")
-    return result
+    return trimmed_main + signature
 
 # ============= ОТПРАВКА В TELEGRAM =============
 def send_to_telegram(chat_id, text, files_data):
@@ -232,6 +202,7 @@ def send_to_max(chat_id, text, files_data=None):
                 if not photos:
                     print(f"   ❌ В ответе загрузки нет поля 'photos'")
                     continue
+                # Берём первый ключ из photos
                 first_photo_key = next(iter(photos))
                 token_info = photos[first_photo_key]
                 file_token = token_info.get('token')
@@ -369,7 +340,7 @@ def create_post():
             time_clean = time_val.replace(':', '_')
             tags.append(f"#{weekday_lower}_{time_clean}")
         if category:
-            category_tag = re.sub(r'[^\w\s-]', '', category)
+            category_tag = re.sub(r'[^\w\s-]', '', category)  # удаляем лишние символы
             category_tag = category_tag.replace(' ', '_')
             tags.append(f"#{category_tag}")
         if tags:
@@ -385,7 +356,6 @@ def create_post():
 
         # 4. Определяем лимит в зависимости от наличия файлов
         max_len = 1024 if files_data else 4096
-        print(f"   📏 Лимит текста: {max_len} символов (файлы={'да' if files_data else 'нет'})")
 
         # 5. Обрезаем текст по абзацам, сохраняя подпись
         final_text = trim_text_to_limit(full_text, signature, max_len)
