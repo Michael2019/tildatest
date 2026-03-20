@@ -88,17 +88,22 @@ def send_to_telegram(chat_id, text, files):
         return {"ok": False, "error": str(e)}
 
 def send_to_max(chat_id, text, files):
-    """Отправка в MAX Messenger (поддерживает один файл)"""
+    """Отправка в MAX Messenger (поддерживает один файл) с подробным логированием"""
     try:
+        print(f"📱 send_to_max: начало, chat_id={chat_id}, text='{text[:50]}...', files={len(files)}")
+        
         if not MAX_BOT_TOKEN:
+            print("❌ send_to_max: MAX_BOT_TOKEN не задан или пустой")
             return {"ok": False, "error": "MAX_BOT_TOKEN not configured", "skipped": True}
         
-        print(f"📱 Отправка в MAX: chat_id={chat_id}")
+        print(f"🔑 MAX_BOT_TOKEN (первые 10 символов): {MAX_BOT_TOKEN[:10]}...")
         
         # Если есть файлы, отправляем первый как медиа
-        if files:
+        if files and len(files) > 0:
             file = files[0]
             mime_type = file.mimetype or 'image/jpeg'
+            filename = file.filename or "unknown"
+            print(f"📎 Обрабатываем файл: {filename}, MIME: {mime_type}")
             
             if 'image' in mime_type:
                 media_type = 'photo'
@@ -107,26 +112,39 @@ def send_to_max(chat_id, text, files):
             else:
                 media_type = 'file'
             
-            # Получаем URL для загрузки
+            # Шаг 1: Получаем URL для загрузки
+            print("🔼 Шаг 1: запрос upload_url...")
             upload_response = requests.post(
                 f"{MAX_API_URL}/uploads",
-                headers={'Authorization': MAX_BOT_TOKEN}
+                headers={'Authorization': MAX_BOT_TOKEN},
+                timeout=10
             )
+            print(f"   статус ответа: {upload_response.status_code}")
+            print(f"   тело ответа: {upload_response.text[:200]}")
             
             if upload_response.status_code == 200:
                 upload_data = upload_response.json()
                 upload_url = upload_data.get('upload_url')
+                print(f"   получен upload_url: {upload_url}")
                 
                 if upload_url:
-                    # Загружаем файл
-                    files_for_max = {'file': (file.filename, file.stream, mime_type)}
-                    file_response = requests.post(upload_url, files=files_for_max)
+                    # Шаг 2: Загружаем файл
+                    print("🔼 Шаг 2: загрузка файла...")
+                    # Важно: для загрузки нужно отправить файл как multipart/form-data
+                    # В stream может быть прочитан ранее? Но в этом запросе мы используем свежий поток.
+                    # Поскольку файл уже был прочитан в первом проходе? Нет, мы передаём оригинальный stream из request.files, он ещё не прочитан.
+                    files_for_max = {'file': (filename, file.stream, mime_type)}
+                    file_response = requests.post(upload_url, files=files_for_max, timeout=30)
+                    print(f"   статус загрузки: {file_response.status_code}")
+                    print(f"   тело ответа: {file_response.text[:200]}")
                     
                     if file_response.status_code == 200:
                         file_data = file_response.json()
                         file_id = file_data.get('file_id')
+                        print(f"   получен file_id: {file_id}")
                         
-                        # Отправляем сообщение с вложением
+                        # Шаг 3: Отправляем сообщение с вложением
+                        print("🔼 Шаг 3: отправка сообщения с вложением...")
                         payload = {
                             'chat_id': chat_id,
                             'text': text,
@@ -137,31 +155,47 @@ def send_to_max(chat_id, text, files):
                                 }
                             ]
                         }
+                        print(f"   payload: {json.dumps(payload, ensure_ascii=False)[:200]}")
                         
                         response = requests.post(
                             f"{MAX_API_URL}/messages/send",
                             headers={'Authorization': MAX_BOT_TOKEN},
-                            json=payload
+                            json=payload,
+                            timeout=10
                         )
+                        print(f"   статус отправки: {response.status_code}")
+                        print(f"   тело ответа: {response.text[:200]}")
                         return response.json() if response.status_code == 200 else {"ok": False, "error": response.text}
+                    else:
+                        print("❌ Ошибка загрузки файла")
+                else:
+                    print("❌ upload_url не получен")
+            else:
+                print("❌ Ошибка получения upload_url")
         
-        # Если нет файлов или не удалось загрузить — просто текст
+        # Если нет файлов или не удалось загрузить — отправляем просто текст
+        print("📝 Отправка текстового сообщения без медиа...")
         payload = {
             'chat_id': chat_id,
             'text': text,
             'format': 'html'
         }
+        print(f"   payload: {json.dumps(payload, ensure_ascii=False)}")
         
         response = requests.post(
             f"{MAX_API_URL}/messages/send",
             headers={'Authorization': MAX_BOT_TOKEN},
-            json=payload
+            json=payload,
+            timeout=10
         )
-        
+        print(f"   статус отправки: {response.status_code}")
+        print(f"   тело ответа: {response.text[:200]}")
         return response.json() if response.status_code == 200 else {"ok": False, "error": response.text}
         
     except Exception as e:
-        print(f"🔥 Ошибка при отправке в MAX: {e}")
+        print(f"🔥 Исключение в send_to_max: {e}")
+        import traceback
+        traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
 # ============= АВТОРИЗАЦИЯ =============
@@ -244,6 +278,9 @@ def create_post():
         
         print(f"  Telegram chat_id: {telegram_chat_id}")
         print(f"  MAX chat_id: {max_chat_id}")
+        print(f"  MAX_BOT_TOKEN определён: {'да' if MAX_BOT_TOKEN else 'нет'}")
+        if MAX_BOT_TOKEN:
+            print(f"  MAX_BOT_TOKEN (первые 10): {MAX_BOT_TOKEN[:10]}")
         print(f"  файлов: {len(files)}")
         
         if not telegram_chat_id:
