@@ -3,6 +3,7 @@ import json
 import requests
 import csv
 import time
+import re
 from io import BytesIO, StringIO
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -123,26 +124,6 @@ def send_to_max(chat_id, text, files_data=None):
     token_preview = MAX_BOT_TOKEN[:5] + "..." if len(MAX_BOT_TOKEN) > 5 else MAX_BOT_TOKEN
     print(f"🔑 Токен MAX (первые 5 символов): {token_preview}")
 
-    # Проверяем токен
-    test_headers = {'Authorization': MAX_BOT_TOKEN, 'Content-Type': 'application/json'}
-    test_payload = {"text": "🔄 Проверка соединения с MAX"}
-    try:
-        test_resp = requests.post(
-            f"https://platform-api.max.ru/messages?chat_id={chat_id}",
-            headers=test_headers,
-            json=test_payload,
-            timeout=10
-        )
-        if test_resp.status_code == 401:
-            print("❌ Токен MAX недействителен (401 при тестовой отправке текста)")
-            return {"ok": False, "error": "Invalid MAX token", "skipped": False}
-        elif test_resp.status_code != 200:
-            print(f"⚠️ Тестовая отправка текста вернула {test_resp.status_code}: {test_resp.text[:100]}")
-        else:
-            print("✅ Токен MAX рабочий")
-    except Exception as e:
-        print(f"⚠️ Не удалось выполнить тестовую отправку: {e}")
-
     message_attachments = []
 
     if files_data:
@@ -188,13 +169,14 @@ def send_to_max(chat_id, text, files_data=None):
                     print(f"   ❌ Ошибка загрузки: {upload_file_resp.status_code} - {upload_file_resp.text[:200]}")
                     continue
 
+                # Из ответа получаем token из поля photos
                 upload_result = upload_file_resp.json()
                 print(f"   ✅ Ответ загрузки: {upload_result}")
-                # Извлекаем token из структуры {'photos': {'key': {'token': ...}}}
                 photos = upload_result.get('photos')
                 if not photos:
                     print(f"   ❌ В ответе загрузки нет поля 'photos'")
                     continue
+                # Берём первый ключ из photos
                 first_photo_key = next(iter(photos))
                 token_info = photos[first_photo_key]
                 file_token = token_info.get('token')
@@ -321,17 +303,32 @@ def create_post():
         if not telegram_chat_id:
             return jsonify({"error": "Не указан ID канала Telegram", "ok": False}), 400
 
-        # Формируем текст поста: сначала добавляем день и время, затем шаблон
+        # Получаем базовый текст из шаблона
         post_text = get_post_template(category, module, lesson)
+
+        # Формируем хэштеги
+        tags = []
         if weekday and time_val:
-            # Преобразуем: "воскресенье" и "10:15" → "(#воскресенье_10_15)"
+            # Хэштег дня недели и времени: #воскресенье_10_15
             weekday_lower = weekday.lower()
             time_clean = time_val.replace(':', '_')
-            prefix = f"(#{weekday_lower}_{time_clean})\n\n"
-            post_text = prefix + post_text
+            tags.append(f"#{weekday_lower}_{time_clean}")
 
+        if category:
+            # Хэштег категории: заменяем пробелы на подчёркивания, убираем другие пробелы
+            category_tag = re.sub(r'[^\w\s-]', '', category)  # удаляем лишние символы
+            category_tag = category_tag.replace(' ', '_')
+            tags.append(f"#{category_tag}")
+
+        if tags:
+            # Собираем строку с хэштегами (через пробел) и добавляем перед текстом (один перенос строки)
+            tags_line = ' '.join(tags)
+            post_text = f"{tags_line}\n{post_text}"
+
+        # Отправка в Telegram
         tg_result = send_to_telegram(telegram_chat_id, post_text, files_data)
 
+        # Отправка в MAX
         max_result = {"ok": False, "skipped": True}
         if max_chat_id and MAX_BOT_TOKEN:
             max_result = send_to_max(max_chat_id, post_text, files_data)
@@ -354,7 +351,6 @@ def create_post():
 # ============= СТАРЫЙ ЭНДПОИНТ (ДЛЯ СОВМЕСТИМОСТИ) =============
 # @app.route('/', methods=['POST'])
 # def handle_post_legacy():
-#     # закомментирован для безопасности
 #     pass
 
 @app.route('/test', methods=['GET'])
