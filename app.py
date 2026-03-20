@@ -66,9 +66,6 @@ def get_post_template(category, module, lesson):
 
 # ============= ОТПРАВКА В TELEGRAM =============
 def send_to_telegram(chat_id, text, files_data):
-    """
-    files_data: список кортежей (filename, content_bytes, mimetype)
-    """
     try:
         print(f"📱 send_to_telegram: chat_id={chat_id}, files={len(files_data)}")
         if files_data:
@@ -116,7 +113,7 @@ def send_to_telegram(chat_id, text, files_data):
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
-# ============= ОТПРАВКА В MAX (С ПЕРЕБОРОМ ВАРИАНТОВ ДЛЯ ФОТО) =============
+# ============= ОТПРАВКА В MAX (улучшенный перебор + попытка через maxapi) =============
 def send_to_max(chat_id, text, files_data):
     try:
         print(f"📱 send_to_max: начало, chat_id={chat_id}, files={len(files_data)}")
@@ -167,30 +164,47 @@ def send_to_max(chat_id, text, files_data):
 
                 # Шаг 3: пробуем разные варианты отправки фото
                 payloads = [
-                    {
-                        'chat_id': int(chat_id),
-                        'text': text,
-                        'attachments': [{'type': 'photo', 'payload': {'token': token}}]
-                    },
+                    # стандартный формат (attachments с file_id)
                     {
                         'chat_id': int(chat_id),
                         'text': text,
                         'attachments': [{'type': 'photo', 'payload': {'file_id': token}}]
                     },
+                    # отдельное поле photo
                     {
                         'chat_id': int(chat_id),
                         'text': text,
-                        'attachments': [{'type': 'image', 'payload': {'token': token}}]
+                        'photo': token
                     },
+                    # отдельное поле file
+                    {
+                        'chat_id': int(chat_id),
+                        'text': text,
+                        'file': token
+                    },
+                    # caption вместо text
                     {
                         'chat_id': int(chat_id),
                         'caption': text,
-                        'attachments': [{'type': 'photo', 'payload': {'token': token}}]
+                        'photo': token
                     },
+                    # attachment (ед. число) с payload = token
                     {
                         'chat_id': int(chat_id),
                         'text': text,
-                        'attachment': {'type': 'photo', 'payload': {'token': token}}
+                        'attachment': {'type': 'photo', 'payload': token}
+                    },
+                    # photo_token
+                    {
+                        'chat_id': int(chat_id),
+                        'text': text,
+                        'photo_token': token
+                    },
+                    # вложение без обертки
+                    {
+                        'chat_id': int(chat_id),
+                        'text': text,
+                        'photo': {'file_id': token}
                     }
                 ]
                 for i, payload in enumerate(payloads):
@@ -199,8 +213,23 @@ def send_to_max(chat_id, text, files_data):
                     if send_resp.status_code == 200:
                         return {"ok": True, "result": send_resp.json()}
 
-                # Если ни один не сработал, отправляем только текст
-                print("⚠️ Все варианты отправки фото не удались, отправляем только текст")
+                # Если ни один не сработал, пытаемся отправить через maxapi (если есть метод send_photo)
+                print("⚠️ Все прямые варианты не удались, пробуем через maxapi.send_photo...")
+                try:
+                    from maxapi import Bot
+                    bot = Bot(MAX_BOT_TOKEN)
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    # Если такого метода нет, будет AttributeError
+                    result = loop.run_until_complete(bot.send_photo(chat_id=int(chat_id), photo=token, caption=text))
+                    loop.close()
+                    return {"ok": True, "result": str(result)}
+                except AttributeError:
+                    print("   Метод send_photo не найден в maxapi, отправляем только текст")
+                except Exception as e:
+                    print(f"   Ошибка при вызове send_photo: {e}")
+
+                # Если ничего не сработало, отправляем только текст
                 return send_text_to_max(chat_id, text)
             else:
                 print(f"⚠️ Тип файла {mime_type} не фото, отправляем только текст")
@@ -294,7 +323,6 @@ def create_post():
         print(f"  MAX chat_id: {max_chat_id}")
         print(f"  файлов получено: {len(uploaded_files)}")
 
-        # Читаем файлы в память
         files_data = []
         for f in uploaded_files:
             content = f.read()
@@ -306,10 +334,8 @@ def create_post():
 
         post_text = get_post_template(category, module, lesson)
 
-        # Отправка в Telegram
         tg_result = send_to_telegram(telegram_chat_id, post_text, files_data)
 
-        # Отправка в MAX
         max_result = {"ok": False, "skipped": True}
         if max_chat_id and MAX_BOT_TOKEN:
             max_result = send_to_max(max_chat_id, post_text, files_data)
