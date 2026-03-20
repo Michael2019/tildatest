@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import csv
+import asyncio
 from io import StringIO
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -9,6 +10,9 @@ from flask_jwt_extended import (
     JWTManager, create_access_token, jwt_required,
     get_jwt_identity, get_jwt
 )
+import httpx
+from maxapi import Bot
+from maxapi.types import Message
 
 import config
 import auth
@@ -16,12 +20,12 @@ import auth
 app = Flask(__name__)
 CORS(app, origins="*", allow_headers=["Authorization", "Content-Type"])
 
-# Настройка JWT (с резервным значением, чтобы сервер гарантированно запустился)
+# Настройка JWT
 app.config['JWT_SECRET_KEY'] = config.config.JWT_SECRET_KEY or "super-secret-dev-key-change-in-production"
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = config.config.JWT_ACCESS_TOKEN_EXPIRES
 jwt = JWTManager(app)
 
-# Обработчики ошибок JWT (для отладки)
+# Обработчики ошибок JWT
 @jwt.unauthorized_loader
 def unauthorized_callback(reason):
     print(f"🚫 JWT unauthorized: {reason}")
@@ -41,8 +45,17 @@ def expired_token_callback(jwt_header, jwt_payload):
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
-MAX_API_URL = "https://platform-api.max.ru"          # базовый URL для MAX API
 SHEETS_CSV_URL = os.environ.get("SHEETS_CSV_URL")
+
+# Глобальный объект бота MAX
+max_bot = None
+
+def get_max_bot():
+    """Возвращает или создаёт экземпляр бота MAX"""
+    global max_bot
+    if max_bot is None and MAX_BOT_TOKEN:
+        max_bot = Bot(MAX_BOT_TOKEN)
+    return max_bot
 
 # ============= ФУНКЦИИ ОТПРАВКИ =============
 def send_to_telegram(chat_id, text, files):
@@ -87,16 +100,15 @@ def send_to_telegram(chat_id, text, files):
         print(f"🔥 Ошибка в send_to_telegram: {e}")
         return {"ok": False, "error": str(e)}
 
-def send_to_max(chat_id, text, files):
-    """Отправка в MAX Messenger (поддерживает фото и видео)"""
+async def send_to_max_async(chat_id, text, files):
+    """Асинхронная отправка в MAX через библиотеку maxapi"""
     try:
         print(f"📱 send_to_max: начало, chat_id={chat_id}, text='{text[:50]}...', files={len(files)}")
-        if not MAX_BOT_TOKEN:
-            print("❌ MAX_BOT_TOKEN не задан, пропускаем MAX")
+        
+        bot = get_max_bot()
+        if not bot:
+            print("❌ MAX_BOT_TOKEN не задан или бот не создан")
             return {"ok": False, "error": "MAX_BOT_TOKEN not configured", "skipped": True}
-
-        # Проверим chat_id (просто логируем)
-        print(f"   Проверка chat_id: {chat_id} (тип: {type(chat_id)})")
 
         # Если есть файлы, отправляем первый как медиа
         if files and len(files) > 0:
@@ -104,84 +116,106 @@ def send_to_max(chat_id, text, files):
             mime_type = file.mimetype or 'image/jpeg'
             filename = file.filename or "unknown"
 
+            # Определяем тип медиа
             if 'image' in mime_type:
                 media_type = 'image'
-            elif 'video' in mime_type:
-                media_type = 'video'
-            else:
-                media_type = 'file'
-
-            # Шаг 1: Получаем URL для загрузки с указанием типа
-            print(f"🔼 Запрос upload_url с type={media_type}...")
-            upload_resp = requests.post(
-                f"{MAX_API_URL}/uploads?type={media_type}",
-                headers={'Authorization': MAX_BOT_TOKEN},
-                timeout=10
-            )
-            print(f"   статус: {upload_resp.status_code}, ответ: {upload_resp.text[:200]}")
-
-            if upload_resp.status_code == 200:
-                upload_data = upload_resp.json()
-                # В ответе приходит поле "url" (не upload_url!)
-                upload_url = upload_data.get('url')
-                print(f"   получен upload_url: {upload_url}")
-
-                if upload_url:
-                    # Шаг 2: загружаем файл
-                    print(f"🔼 Загрузка файла на {upload_url}...")
-                    file_resp = requests.post(
-                        upload_url,
-                        files={'file': (filename, file.stream, mime_type)},
-                        timeout=30
+                # Читаем содержимое файла для отправки
+                file_content = file.read()
+                
+                # Загружаем фото через библиотеку maxapi
+                # В библиотеке должен быть метод для загрузки фото
+                # Используем прямой HTTP запрос, если нет готового метода
+                async with httpx.AsyncClient() as client:
+                    # Получаем upload_url
+                    upload_resp = await client.post(
+                        f"https://platform-api.max.ru/uploads?type={media_type}",
+                        headers={'Authorization': MAX_BOT_TOKEN}
                     )
-                    print(f"   статус загрузки: {file_resp.status_code}, ответ: {file_resp.text[:200]}")
-
-                    if file_resp.status_code == 200:
-                        file_data = file_resp.json()
-                        file_id = file_data.get('file_id')
-                        if file_id:
-                            payload = {
-                                'chat_id': chat_id,
-                                'text': text,
-                                'attachments': [{
-                                    'type': media_type,
-                                    'payload': {'file_id': file_id}
-                                }]
-                            }
-                        else:
-                            print("❌ Не получен file_id после загрузки")
-                            payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
+                    if upload_resp.status_code != 200:
+                        print(f"❌ Ошибка получения upload_url: {upload_resp.text}")
+                        # Отправляем только текст
+                        result = await bot.send_message(chat_id=int(chat_id), text=text)
+                        return {"ok": True, "result": str(result)}
+                    
+                    upload_data = upload_resp.json()
+                    upload_url = upload_data.get('url')
+                    
+                    if not upload_url:
+                        print("❌ Нет upload_url в ответе")
+                        result = await bot.send_message(chat_id=int(chat_id), text=text)
+                        return {"ok": True, "result": str(result)}
+                    
+                    # Загружаем файл
+                    files_dict = {'photo': (filename, file_content, mime_type)}
+                    file_resp = await client.post(upload_url, files=files_dict)
+                    
+                    if file_resp.status_code != 200:
+                        print(f"❌ Ошибка загрузки файла: {file_resp.text}")
+                        result = await bot.send_message(chat_id=int(chat_id), text=text)
+                        return {"ok": True, "result": str(result)}
+                    
+                    file_data = file_resp.json()
+                    file_id = file_data.get('file_id') or file_data.get('photo_id')
+                    
+                    if not file_id:
+                        print("❌ Не получен file_id после загрузки")
+                        result = await bot.send_message(chat_id=int(chat_id), text=text)
+                        return {"ok": True, "result": str(result)}
+                    
+                    # Отправляем сообщение с фото
+                    # Для MAX нужно сформировать сообщение с вложением
+                    # Используем прямой API запрос, так как библиотека может не поддерживать медиа
+                    message_payload = {
+                        'chat_id': int(chat_id),
+                        'text': text,
+                        'attachments': [{
+                            'type': media_type,
+                            'payload': {'file_id': file_id}
+                        }]
+                    }
+                    
+                    send_resp = await client.post(
+                        "https://platform-api.max.ru/messages",
+                        headers={'Authorization': MAX_BOT_TOKEN},
+                        json=message_payload
+                    )
+                    
+                    if send_resp.status_code == 200:
+                        print("✅ Сообщение с фото успешно отправлено в MAX")
+                        return {"ok": True, "result": send_resp.json()}
                     else:
-                        print("❌ Ошибка загрузки файла, отправляем только текст")
-                        payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
-                else:
-                    print("❌ Не получен upload_url, отправляем только текст")
-                    payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
+                        print(f"❌ Ошибка отправки сообщения с фото: {send_resp.text}")
+                        # Пробуем отправить только текст
+                        result = await bot.send_message(chat_id=int(chat_id), text=text)
+                        return {"ok": True, "result": str(result)}
             else:
-                print("❌ Ошибка получения upload_url, отправляем только текст")
-                payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
+                # Для видео или других типов пока отправляем только текст
+                print(f"⚠️ Тип медиа {media_type} пока не поддерживается, отправляем только текст")
+                result = await bot.send_message(chat_id=int(chat_id), text=text)
+                return {"ok": True, "result": str(result)}
         else:
-            payload = {'chat_id': chat_id, 'text': text, 'format': 'html'}
-
-        # Отправляем сообщение в MAX
-        print("📤 Отправка сообщения в MAX...")
-        response = requests.post(
-            f"{MAX_API_URL}/messages",
-            headers={'Authorization': MAX_BOT_TOKEN},
-            json=payload,
-            timeout=10
-        )
-        print(f"   статус: {response.status_code}, ответ: {response.text[:200]}")
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"ok": False, "error": response.text}
-
+            # Отправляем только текст
+            print("📝 Отправка текстового сообщения в MAX")
+            result = await bot.send_message(chat_id=int(chat_id), text=text)
+            return {"ok": True, "result": str(result)}
+            
     except Exception as e:
-        print(f"🔥 Исключение в send_to_max: {e}")
+        print(f"🔥 Исключение в send_to_max_async: {e}")
         import traceback
         traceback.print_exc()
+        return {"ok": False, "error": str(e)}
+
+def send_to_max(chat_id, text, files):
+    """Синхронная обёртка для асинхронной отправки в MAX"""
+    try:
+        # Создаём новый event loop, если нет текущего
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(send_to_max_async(chat_id, text, files))
+        loop.close()
+        return result
+    except Exception as e:
+        print(f"🔥 Ошибка в send_to_max: {e}")
         return {"ok": False, "error": str(e)}
 
 # ============= АВТОРИЗАЦИЯ =============
@@ -323,7 +357,20 @@ def handle_post_legacy():
 
 @app.route('/test', methods=['GET'])
 def test():
-    return jsonify({"status": "ok", "message": "Сервер работает!"})
+    # Проверяем MAX бота
+    max_status = "не настроен"
+    if MAX_BOT_TOKEN:
+        try:
+            # Простая проверка токена
+            max_status = "токен присутствует"
+        except:
+            max_status = "ошибка"
+    
+    return jsonify({
+        "status": "ok", 
+        "message": "Сервер работает!",
+        "max_bot": max_status
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
