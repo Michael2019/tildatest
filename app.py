@@ -112,7 +112,7 @@ def send_to_telegram(chat_id, text, files_data):
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
-# ============= ОТПРАВКА В MAX (синхронная, без maxapi) =============
+# ============= ОТПРАВКА В MAX (синхронно) =============
 def send_to_max(chat_id, text, files_data):
     try:
         print(f"📱 send_to_max: начало, chat_id={chat_id}, files={len(files_data)}")
@@ -161,78 +161,47 @@ def send_to_max(chat_id, text, files_data):
 
                 print(f"   получен token: {token[:20]}...")
 
-                # Шаг 3: пробуем разные варианты отправки фото
-                payloads = [
-                    # вариант 0: стандартный attachments с file_id
-                    {
-                        'chat_id': int(chat_id),
-                        'text': text,
-                        'attachments': [{'type': 'photo', 'payload': {'file_id': token}}]
-                    },
-                    # вариант 1: отдельное поле photo
-                    {
-                        'chat_id': int(chat_id),
-                        'text': text,
-                        'photo': token
-                    },
-                    # вариант 2: отдельное поле file
-                    {
-                        'chat_id': int(chat_id),
-                        'text': text,
-                        'file': token
-                    },
-                    # вариант 3: caption вместо text
-                    {
-                        'chat_id': int(chat_id),
-                        'caption': text,
-                        'photo': token
-                    },
-                    # вариант 4: attachment (ед. число)
-                    {
-                        'chat_id': int(chat_id),
-                        'text': text,
-                        'attachment': {'type': 'photo', 'payload': token}
-                    },
-                    # вариант 5: photo_token
-                    {
-                        'chat_id': int(chat_id),
-                        'text': text,
-                        'photo_token': token
-                    },
-                    # вариант 6: вложение с file_id без обертки
-                    {
-                        'chat_id': int(chat_id),
-                        'text': text,
-                        'photo': {'file_id': token}
-                    },
-                    # вариант 7: формат как в документации MaxBotAPI (если известно)
-                    {
-                        'chat_id': int(chat_id),
-                        'text': text,
-                        'attachments': [{'type': 'photo', 'payload': token}]
-                    },
-                    # вариант 8: только token
-                    {
-                        'chat_id': int(chat_id),
-                        'text': text,
-                        'photo_token': token,
-                        'type': 'photo'
-                    }
-                ]
-                for i, payload in enumerate(payloads):
-                    send_resp = requests.post(f"{MAX_API_URL}/messages", headers={'Authorization': MAX_BOT_TOKEN}, json=payload, timeout=10)
-                    print(f"   вариант {i}: статус {send_resp.status_code}, ответ: {send_resp.text[:100]}")
-                    if send_resp.status_code == 200:
-                        return {"ok": True, "result": send_resp.json()}
+                # Шаг 3: пробуем отправить фото в MAX
+                # Пробуем поле photo (как в Telegram)
+                payload = {
+                    'chat_id': int(chat_id),
+                    'text': text,
+                    'photo': token
+                }
+                send_resp = requests.post(f"{MAX_API_URL}/messages", headers={'Authorization': MAX_BOT_TOKEN}, json=payload, timeout=10)
+                print(f"   отправка с photo: статус {send_resp.status_code}, ответ: {send_resp.text[:100]}")
+                if send_resp.status_code == 200:
+                    return {"ok": True, "result": send_resp.json()}
 
-                # Если ни один не сработал, отправляем только текст
+                # Если не сработало, пробуем через attachments
+                payload = {
+                    'chat_id': int(chat_id),
+                    'text': text,
+                    'attachments': [{'type': 'photo', 'payload': {'file_id': token}}]
+                }
+                send_resp = requests.post(f"{MAX_API_URL}/messages", headers={'Authorization': MAX_BOT_TOKEN}, json=payload, timeout=10)
+                print(f"   отправка с attachments: статус {send_resp.status_code}, ответ: {send_resp.text[:100]}")
+                if send_resp.status_code == 200:
+                    return {"ok": True, "result": send_resp.json()}
+
+                # Если не сработало, пробуем отправить как document с photo_token
+                payload = {
+                    'chat_id': int(chat_id),
+                    'text': text,
+                    'photo_token': token
+                }
+                send_resp = requests.post(f"{MAX_API_URL}/messages", headers={'Authorization': MAX_BOT_TOKEN}, json=payload, timeout=10)
+                print(f"   отправка с photo_token: статус {send_resp.status_code}, ответ: {send_resp.text[:100]}")
+                if send_resp.status_code == 200:
+                    return {"ok": True, "result": send_resp.json()}
+
+                # Если ничего не сработало, отправляем только текст
                 print("⚠️ Все варианты отправки фото не удались, отправляем только текст")
                 return send_text_to_max(chat_id, text)
             else:
                 print(f"⚠️ Тип файла {mime_type} не фото, отправляем только текст")
                 return send_text_to_max(chat_id, text)
         else:
-            # Нет файлов: отправляем только текст
             return send_text_to_max(chat_id, text)
 
     except Exception as e:
@@ -242,11 +211,11 @@ def send_to_max(chat_id, text, files_data):
         return {"ok": False, "error": str(e)}
 
 def send_text_to_max(chat_id, text):
-    """Отправка только текста через прямой запрос (синхронно)"""
+    """Отправка только текста в MAX (синхронно)"""
     try:
-        print("📝 Отправка текстового сообщения в MAX")
+        print("📝 Отправка текстового сообщения в MAX (синхронно)")
         payload = {
-            'chat_id': int(chat_id),
+            'chat_id': int(chat_id),  # важно: число
             'text': text,
             'format': 'html'
         }
@@ -260,7 +229,6 @@ def send_text_to_max(chat_id, text):
         if response.status_code == 200:
             return {"ok": True, "result": response.json()}
         else:
-            # Возвращаем ошибку, но не помечаем как пропущенный
             return {"ok": False, "error": response.text}
     except Exception as e:
         print(f"🔥 Ошибка в send_text_to_max: {e}")
