@@ -202,7 +202,6 @@ def send_to_max(chat_id, text, files_data=None):
                 if not photos:
                     print(f"   ❌ В ответе загрузки нет поля 'photos'")
                     continue
-                # Берём первый ключ из photos
                 first_photo_key = next(iter(photos))
                 token_info = photos[first_photo_key]
                 file_token = token_info.get('token')
@@ -308,7 +307,9 @@ def create_post():
         role = claims.get('role', '').strip()
         print(f"👤 {current_username} (роль: {role}) создаёт пост")
 
-        category = request.form.get('category', '')
+        # Основные поля
+        user_text = request.form.get('user_text', '').strip()          # новая форма
+        category = request.form.get('category', '')                    # старая форма
         module = request.form.get('module', '')
         lesson = request.form.get('lesson', '')
         weekday = request.form.get('weekday', '')
@@ -320,6 +321,7 @@ def create_post():
         print(f" Telegram chat_id: {telegram_chat_id}")
         print(f" MAX chat_id: {max_chat_id}")
         print(f" файлов получено: {len(uploaded_files)}")
+        print(f" user_text (длина): {len(user_text)}")
 
         files_data = []
         for f in uploaded_files:
@@ -330,40 +332,46 @@ def create_post():
         if not telegram_chat_id:
             return jsonify({"error": "Не указан ID канала Telegram", "ok": False}), 400
 
-        # 1. Получаем базовый текст из шаблона
-        base_text = get_post_template(category, module, lesson)
+        # 1. Определяем базовый текст
+        if user_text:
+            base_text = user_text
+            print("   → Используем пользовательский текст")
+        else:
+            base_text = get_post_template(category, module, lesson)
+            print("   → Используем шаблон из таблицы")
 
-        # 2. Добавляем хэштеги дня/времени и категории
+        # 2. Формируем хэштеги (только если соответствующие поля переданы и не пусты)
         tags = []
         if weekday and time_val:
             weekday_lower = weekday.lower()
             time_clean = time_val.replace(':', '_')
             tags.append(f"#{weekday_lower}_{time_clean}")
         if category:
-            category_tag = re.sub(r'[^\w\s-]', '', category)  # удаляем лишние символы
+            category_tag = re.sub(r'[^\w\s-]', '', category)
             category_tag = category_tag.replace(' ', '_')
             tags.append(f"#{category_tag}")
+
         if tags:
             tags_line = ' '.join(tags)
             full_text = f"{tags_line}\n{base_text}"
         else:
             full_text = base_text
 
-        # 3. Добавляем подпись преподавателя (если роль не пустая и не служебная)
+        # 3. Подпись преподавателя
         signature = ""
         if role and role.lower() not in ('admin', 'user', 'moderator'):
             signature = f"\n\nВаш преподаватель {role}"
 
-        # 4. Определяем лимит в зависимости от наличия файлов
+        # 4. Лимит в зависимости от наличия файлов
         max_len = 1024 if files_data else 4096
+        print(f"   📏 Лимит текста: {max_len} символов (файлы={'да' if files_data else 'нет'})")
 
-        # 5. Обрезаем текст по абзацам, сохраняя подпись
+        # 5. Усечение текста
         final_text = trim_text_to_limit(full_text, signature, max_len)
 
-        # Отправка в Telegram
+        # Отправка
         tg_result = send_to_telegram(telegram_chat_id, final_text, files_data)
 
-        # Отправка в MAX
         max_result = {"ok": False, "skipped": True}
         if max_chat_id and MAX_BOT_TOKEN:
             max_result = send_to_max(max_chat_id, final_text, files_data)
