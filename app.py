@@ -47,7 +47,6 @@ MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 SHEETS_CSV_URL = os.environ.get("SHEETS_CSV_URL")
 
-# ============= ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ШАБЛОНОВ =============
 def get_post_template(category, module, lesson):
     try:
         if not SHEETS_CSV_URL:
@@ -66,27 +65,15 @@ def get_post_template(category, module, lesson):
         print(f"Ошибка шаблона: {e}")
         return f"{category}, модуль {module}, занятие {lesson}"
 
-# ============= ФУНКЦИЯ УСЕЧЕНИЯ ТЕКСТА ПО АБЗАЦАМ =============
 def trim_text_to_limit(main_text, signature, max_length):
-    """
-    Удаляет абзацы из main_text, чтобы main_text + signature вписался в max_length.
-    signature добавляется в конце.
-    Возвращает итоговую строку.
-    """
     full = main_text + signature
     if len(full) <= max_length:
         return full
-
-    # Разбиваем основной текст на абзацы (разделитель \n\n)
     paragraphs = main_text.split('\n\n')
-    # Пока суммарная длина (оставшиеся абзацы + подпись) превышает лимит, удаляем последний абзац
     while paragraphs and len('\n\n'.join(paragraphs) + signature) > max_length:
         paragraphs.pop()
-
     trimmed_main = '\n\n'.join(paragraphs)
-    # Если после удаления всех абзацев всё равно превышает, оставляем только подпись
     if len(trimmed_main + signature) > max_length:
-        # Если даже подпись слишком длинная (редко), обрезаем её посимвольно
         if len(signature) > max_length:
             signature = signature[:max_length - 3] + '...'
         return signature
@@ -142,7 +129,6 @@ def send_to_telegram(chat_id, text, files_data):
 # ============= ОТПРАВКА В MAX (С ПОДДЕРЖКОЙ ФАЙЛОВ) =============
 def send_to_max(chat_id, text, files_data=None):
     print(f"📱 send_to_max: chat_id={chat_id}, files={len(files_data) if files_data else 0}")
-
     if not MAX_BOT_TOKEN:
         print("❌ MAX_BOT_TOKEN не задан")
         return {"ok": False, "error": "MAX_BOT_TOKEN not configured", "skipped": True}
@@ -163,8 +149,6 @@ def send_to_max(chat_id, text, files_data=None):
                 continue
 
             try:
-                # Шаг 1: Получить URL для загрузки
-                print(f"   → Запрашиваем URL для {filename} (тип {file_type})")
                 upload_req = requests.post(
                     "https://platform-api.max.ru/uploads",
                     params={'type': file_type},
@@ -181,8 +165,6 @@ def send_to_max(chat_id, text, files_data=None):
                 upload_url = upload_data['url']
                 print(f"   ✅ URL получен: {upload_url[:80]}...")
 
-                # Шаг 2: Загрузить файл методом POST с multipart/form-data
-                print(f"   → Загружаем файл {filename} ({len(content)} байт) через POST")
                 files = {'data': (filename, content, mime_type)}
                 headers_upload = {'Authorization': MAX_BOT_TOKEN}
                 upload_file_resp = requests.post(
@@ -195,7 +177,6 @@ def send_to_max(chat_id, text, files_data=None):
                     print(f"   ❌ Ошибка загрузки: {upload_file_resp.status_code} - {upload_file_resp.text[:200]}")
                     continue
 
-                # Из ответа получаем token из поля photos
                 upload_result = upload_file_resp.json()
                 print(f"   ✅ Ответ загрузки: {upload_result}")
                 photos = upload_result.get('photos')
@@ -226,7 +207,6 @@ def send_to_max(chat_id, text, files_data=None):
                 import traceback
                 traceback.print_exc()
 
-    # Формируем тело сообщения
     message_body = {}
     if text:
         message_body['text'] = text
@@ -237,7 +217,6 @@ def send_to_max(chat_id, text, files_data=None):
     if not message_body:
         return {"ok": False, "error": "Нет контента для отправки", "skipped": True}
 
-    # Отправляем сообщение
     try:
         print(f"   → Отправляем сообщение в MAX (текст={bool(text)}, вложений={len(message_attachments)})")
         send_msg_resp = requests.post(
@@ -308,8 +287,8 @@ def create_post():
         print(f"👤 {current_username} (роль: {role}) создаёт пост")
 
         # Основные поля
-        user_text = request.form.get('user_text', '').strip()          # новая форма
-        category = request.form.get('category', '')                    # старая форма
+        user_text = request.form.get('user_text', '').strip()
+        category = request.form.get('category', '')
         module = request.form.get('module', '')
         lesson = request.form.get('lesson', '')
         weekday = request.form.get('weekday', '')
@@ -317,11 +296,13 @@ def create_post():
         telegram_chat_id = request.form.get('chat_id', '')
         max_chat_id = request.form.get('max_chat_id', '')
         uploaded_files = request.files.getlist('media_files')
+        form_type = request.form.get('form_type', 'lessons')   # 👈 определяем тип формы
 
         print(f" Telegram chat_id: {telegram_chat_id}")
         print(f" MAX chat_id: {max_chat_id}")
         print(f" файлов получено: {len(uploaded_files)}")
         print(f" user_text (длина): {len(user_text)}")
+        print(f" form_type: {form_type}")
 
         files_data = []
         for f in uploaded_files:
@@ -340,7 +321,7 @@ def create_post():
             base_text = get_post_template(category, module, lesson)
             print("   → Используем шаблон из таблицы")
 
-        # 2. Формируем хэштеги (только если соответствующие поля переданы и не пусты)
+        # 2. Формируем хэштеги
         tags = []
         if weekday and time_val:
             weekday_lower = weekday.lower()
@@ -357,10 +338,13 @@ def create_post():
         else:
             full_text = base_text
 
-        # 3. Подпись преподавателя
+        # 3. Подпись преподавателя/наставника
         signature = ""
         if role and role.lower() not in ('admin', 'user', 'moderator'):
-            signature = f"\n\nВаш преподаватель {role}"
+            if form_type == 'camp':
+                signature = f"\n\nВаш наставник {role}"
+            else:
+                signature = f"\n\nВаш преподаватель {role}"
 
         # 4. Лимит в зависимости от наличия файлов
         max_len = 1024 if files_data else 4096
@@ -390,11 +374,6 @@ def create_post():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e), "ok": False}), 500
-
-# ============= СТАРЫЙ ЭНДПОИНТ (ДЛЯ СОВМЕСТИМОСТИ) =============
-# @app.route('/', methods=['POST'])
-# def handle_post_legacy():
-#     pass
 
 @app.route('/test', methods=['GET'])
 def test():
